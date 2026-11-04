@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"方案 B（设备树 + 派生节点）的特性设计；不属于本文件的内容：业界调研依据见 [docs/research/r2c-multi-device-industry-survey.md](../research/r2c-multi-device-industry-survey.md)，R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
-> 状态：**v0.1 初稿——领域建模偏差已识别，待评审定案后出 v0.2**。经对 `packages/cloudrobo-r2c` 的完全调研（[docs/research/cloudrobo-r2c-codebase-survey.md](../research/r2c-multi-device-industry-survey.md) 同目录 `cloudrobo-r2c-codebase-survey.md`），本稿"devices 列表 = 多 adapter 聚合"的建模与代码现状有偏差（现状：一个 adapter = 一台整机，无聚合层；多设备是 adapter 内键前缀），组合层级需在"键空间树 / 声明式子设备清单 / adapter 树"三路线中定案（调研第 10 节）。已确认修正：常规 Observations 上行对齐 0.5Hz（决策点 D3 修订）；窗口批经 extensions 随唯一观测入口 `{p}/{d}/inference/observations` 上行、不新起 topic（2026-11-04 定案，D7 已闭合）；30Hz 采样与 0.5Hz 上行需拆双节拍。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
+> 状态：**v0.2——组合层级已按 ROS+OpenCV 场景验证定案为路线 1.5（声明式子设备清单，见第 13 节），领域模型对齐 `packages/cloudrobo-r2c` 代码现状（完全调研见 [docs/research/cloudrobo-r2c-codebase-survey.md](../research/cloudrobo-r2c-codebase-survey.md)）**。已确认修正：常规 Observations 上行对齐 0.5Hz（D3）；窗口批经 extensions 随唯一观测入口 `{p}/{d}/inference/observations` 上行、不新起 topic（D7 已定案）；30Hz 采样与 0.5Hz 上行拆双节拍。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
 
 ## 1. 特性概述
 
@@ -29,6 +29,8 @@
 |------|------|
 | 设备树 | `robot_config` 中 `devices` 列表构成的设备关系图：源设备 + 派生节点，靠引用（input / depends_on）组合，不做深层级内嵌 |
 | 源设备（source） | 直接对接硬件/厂商 SDK 的设备节点（本体、末端、传感器），由现有 adapter 体系实现 |
+| 适配器节点（adapter） | 传输/厂商实现层节点：一个 adapter = 一个上下文（ROS 上下文、串口、相机采集），走现有 `r2c_sdk.adapters` 注册表；**设备树的第一层分组**（如场景中 `ros:` 下挂机械臂与夹爪） |
+| 子设备声明（devices） | adapter 对其键空间内逻辑设备的声明（name / type / channels），由 `describe_devices()` 自动推导、配置可覆盖 |
 | 派生节点（derived） | 以一个或多个源设备的输出为输入、产出派生信号的节点；本版本实现 `history`，预留 `filter` / `tf` |
 | 环形缓冲（ring buffer） | SDK 通用组件：按 `(设备, 通道)` 维度缓存最近 `ceil(window_s × sample_hz)` 个样本，溢出覆盖最旧 |
 | 窗口批（window batch） | `history` 节点按 `publish_hz` 注入 `Observations.extensions` 的一组扩展字段（键 `<源设备>.window`）：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
@@ -49,14 +51,16 @@
 ## 4. 总体方案
 
 ```text
-robot_config (v3.0, devices 树)
+robot_config (v3.0: adapters 树 = 传输分组 + 子设备声明 + 派生节点)
   │
   ▼
-DeviceManager（每 R2CClient 一个）
-  ├── 源设备: left_ft (FT adapter)      ──30Hz──► RingBuffer(left_ft, cap=60)
-  ├── 源设备: right_ft (FT adapter)     ──30Hz──► RingBuffer(right_ft, cap=60)
-  ├── 派生: ft_hist (derived/history, input=left_ft, 0.5Hz)
-  │        └─ 每 2s: 截窗 [now-2s, now) → ObservationWindow → Zenoh
+DeviceManager（每 R2CClient 一个，按 adapter 组织）
+  ├── adapter: left_ft_dev (type ft300)            # 一个厂商/传输上下文 = 一个 adapter
+  │     └── 源设备: left_ft ──30Hz──► RingBuffer(left_ft, cap=60)
+  ├── adapter: cam0 (type opencv_camera)           # 同型多实例：cam0 / cam1 ...
+  │     └── 源设备: camera0 ──30Hz──► RingBuffer(camera0, cap=60)
+  ├── 派生: ft_hist (derived/history, input=left_ft)
+  │        └─ 每 2s: 截窗 [now-2s, now) → 窗口批注入 extensions
   └── 派生: ...(filter/tf 预留)
   ▼
 Zenoh: {project_id}/{device_id}/inference/observations（观测唯一入口，不新起 topic）
@@ -97,47 +101,49 @@ sequenceDiagram
 ```yaml
 schema_version: "v3.0"
 
-runtime:            # 沿用 v2.1 字段，新增 window 批相关默认值
-  publish_hz: 30.0
-  ...
+runtime:            # 沿用 v2.1 字段；观测上行对齐模型调用频率（D3）
 
-devices:
-  # ---- 源设备 ----
-  - name: left_ft
-    type: force_torque            # 设备类型（本体/末端/传感器大类下的具体类型）
-    adapter: ft300                # 实现，走现有 r2c_sdk.adapters entry-point 注册表
+adapters:                          # 传输/厂商实现层：一个 adapter = 一个上下文（ROS 上下文、串口、相机）
+  - name: left_ft_dev
+    type: ft300                    # 走现有 r2c_sdk.adapters entry-point 注册表
     params:
       port: /dev/ttyUSB0
-      sample_hz: 30.0             # 源设备采样率，历史窗口容量按此折算
-    translator:                   # 沿用现有 device_to_r2c / r2c_to_device 映射，归属到设备
-      ...
-  - name: right_arm
-    type: arm
-    adapter: bi_so_follower_right
-    ...
-  # ---- 派生节点 ----
+      sample_hz: 30.0              # 采样率，历史窗口容量按此折算
+    devices:                       # adapter 键空间内的子设备声明（describe_devices 自动推导，配置可覆盖 channels）
+      - name: left_ft
+        type: force_torque
+        channels: ["wrench_*"]
+    translator: ...                # 映射按设备分组：devices.left_ft.mappings（沿用 device_to_r2c / r2c_to_device 语义）
+  - name: cam0
+    type: opencv_camera            # 新增独立相机适配器（见 13 节增量 1）
+    params: {index_or_path: "/dev/video0", width: 640, height: 480, fps: 30}
+    devices:
+      - {name: camera0, type: camera, channels: ["camera0*"]}
+
+derived:                           # 派生节点（input 引用设备名，可跨 adapter）
   - name: left_ft_hist
-    type: derived/history
-    input: left_ft                # 引用（phandle 式）：单输入；多输入能力预留 input: [a, b]
+    type: history
+    input: left_ft
     params:
-      window_s: 2.0               # 窗口批随观测上行（观测上行频率 = 模型调用频率，见 5.3 / D3），节点不再单独配 publish_hz
+      window_s: 2.0                # 窗口批随观测上行（频率 = 模型调用频率，见 5.3 / D3）
 ```
 
 字段与校验规则：
 
 | 规则 | 说明 |
 |------|------|
-| `name` 树内唯一 | 对齐 Viam 资源 name / ros2_control 块名；消息与 topic 按 name 引用 |
-| `derived` 节点必须有 `input` | 引用必须指向已定义设备；允许引用派生节点（链式），配置加载时做无环检测 |
-| 容量上限 | `window_s × sample_hz ≤ 4096`（防误配），超出拒绝加载并报错 |
+| `adapters.<name>.type` | 走现有 `r2c_sdk.adapters` entry-point 注册表；一个 adapter = 一个传输/厂商上下文（ROS 上下文、串口、相机采集） |
+| `adapters.<name>.devices` | adapter 键空间内的子设备声明：`name` 全局唯一（对齐 Viam name / ros2_control 块名）；`channels` 声明该设备占用的键前缀；优先由 `describe_devices()` 自动推导、配置可覆盖 |
+| `derived` 节点必须有 `input` | 引用子设备名（可跨 adapter）；允许链式引用派生节点，配置加载时做无环检测 |
+| 容量上限 | `window_s × sample_hz ≤ 4096`（防误配），超出拒绝加载并报错——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"`，调研偏差 #6） |
 | `derived/history` 参数默认值 | `window_s: 2.0`（窗口批随观测上行，观测频率即模型调用频率，节点无独立发布频率） |
-| 兼容 | 配置无 `devices` 块时，完全沿用 v2.1 单 `hardware` 块行为，不加载 DeviceManager |
+| 兼容 | 配置无 `adapters` 块时，完全沿用 v2.1 单 `hardware` 块行为，不加载 DeviceManager |
 
 **决策点 D1**：`devices` 列表是否需要显式层级字段（如 `parent`）？当前设计为"扁平列表 + 引用"，树形仅是引用关系图（业界证据：devicetree 单亲树 + phandle；Viam depends_on）。建议保持扁平，评审确认。
 
 ### 5.2 设备与派生节点运行时
 
-- 新增 `DeviceManager`：加载 `devices` 列表，实例化源设备（复用现有 AdapterRegistry）与派生节点（新增 `r2c_sdk.derived_nodes` entry-point 组，镜像现有 adapter 注册表机制）。
+- 新增 `DeviceManager`：按 `adapters` 列表实例化适配器（复用现有 AdapterRegistry），在每个 adapter 键空间内登记子设备（`describe_devices()` 声明 + 配置覆盖），实例化派生节点（新增 `r2c_sdk.derived_nodes` entry-point 组，镜像现有 adapter 注册表机制）。
 - 生命周期（借鉴 ros2_control 组件状态机，调研已核验）：`UNCONFIGURED → INACTIVE → ACTIVE`；派生节点在其全部 `input` 均 ACTIVE 后才进入 ACTIVE。
 - 错误隔离：单源设备 ERROR 只停用该设备与其下游派生节点（派生节点转 `DEGRADED`，见 5.4 健康位），不拖垮设备树其他分支——对齐 Viam "远端 unreachable 不消失" 语义。
 - 心跳扩展（决策点 D2）：`Heartbeat` 新增 `repeated DeviceHealth devices`（name、state、error_code），整机字段保留；proto 只增不改。
@@ -246,13 +252,65 @@ message ObservationWindow {
 2. 方案 C（入湖后云端窗口查询）作为训练 / 回放场景的后续特性；
 3. 常规 Observations 上行频率与 0.5Hz 模型调用的对齐策略（决策点 D3）；
 4. 运行中热更新设备树（对标 Viam 热加载）；
-5. 多设备 `joint_states` 分组消息（Actions `end_effector_poses` map 模式推广到关节面）。
+5. 多设备 `joint_states` 分组消息（Actions `end_effector_poses` map 模式推广到关节面）；
+6. 存量 16 个 adapter 分批补 `describe_devices()`（ros2/lerobot 优先，其余先回退配置声明 channels）；新增独立 `opencv_camera` 适配器（第 13 节场景增量 1）。
+
+## 13. 场景覆盖验证：ROS 机械臂/夹爪 + OpenCV 相机（2026-11-04 增）
+
+场景：机械臂与夹爪走 ROS 通信，两个相机走 OpenCV。目标设备树：
+
+```text
+ros:
+  - 机械臂 (arm)
+  - 夹爪 (gripper)
+opencv 相机 1
+opencv 相机 2
+```
+
+**结论：本特性可覆盖；组合层级据此定案为路线 1.5（声明式子设备清单），本稿 v0.2 已按此修订**（三路线对比见代码调研第 10 节）——"ros:" 这一层是**传输/适配器分组**（臂与夹爪共享同一 ROS 上下文），不是两个独立适配器。这与代码现状一致：`Ros2HardwareAdapter` 持有 ROS 上下文、一个 adapter 服务多设备（同 lerobot `bi_so_follower` 双臂形态）。若按"每设备独立 adapter"（路线 2），臂与夹爪需两个 adapter 共享一个 rcl 上下文——现有代码不支持，需新机制。
+
+配置映射（路线 1.5 形态）：
+
+```yaml
+schema_version: "v3.0"
+adapters:
+  - name: ros                      # 一个 ROS 上下文
+    type: ros2
+    config:
+      subscriptions:               # 现有 SubscriptionConfig 已支持 store_as 键前缀
+        - {topic: /arm/joint_states, msg_type: sensor_msgs/msg/JointState, store_as: arm_joint_states}
+        - {topic: /gripper/state, msg_type: ..., store_as: gripper_state}
+      publishers: ...
+    devices:                       # adapter describe_devices() 声明 + 配置引用
+      - {name: arm,     type: arm,     channels: ["arm_*"]}
+      - {name: gripper, type: gripper, channels: ["gripper_*"]}
+  - name: cam1                     # 同一 adapter 类型的两个实例
+    type: opencv_camera
+    config: {index_or_path: "/dev/video0", width: 640, height: 480, fps: 30}
+    devices: [{name: camera1, type: camera, channels: ["camera1*"]}]
+  - name: cam2
+    type: opencv_camera
+    config: {index_or_path: "/dev/video2", width: 640, height: 480, fps: 30}
+    devices: [{name: camera2, type: camera, channels: ["camera2*"]}]
+```
+
+对应 R2C 消息（**现有结构即可承载**）：
+- arm → `joint_states`（names + position）；gripper → `end_effector_states` / 夹爪字段；
+- camera1 / camera2 → `images.color.camera1`、`images.color.camera2`（`ImageGroups` 本就按相机名为键分组，`image_raw.proto:13-15`）；
+- 各设备历史窗口批 → `extensions["arm.window"]`、`extensions["camera1.window"]`（按源设备命名，云端不感知 node，D7 定案）。
+
+需要相对现状代码的增量：
+1. **新增独立 `opencv_camera` 适配器**（小）：现状相机都是 adapter 内部子对象（ur5e `_cameras`、dummy `image_specs`），无独立相机适配器；OpenCV 采集可复用 LeRobot 的 OpenCV camera 实现；
+2. ros2 适配器补 `describe_devices()` 元数据 API（从 `SubscriptionConfig.store_as` 前缀推导子设备清单）；
+3. 映射表按设备分组（路线 1 机制）：`devices.arm.mappings` / `devices.gripper.mappings` / `devices.camera1.mappings` 替代全局单表。
+
+覆盖检查：设备身份 ✔（adapter + devices 声明）；同型多实例 ✔（cam1/cam2）；传输共享 ✔（ros adapter 内两设备）；异构传输并存 ✔（ros 与 opencv 互不影响）；独立故障 ✔（ros 断 → arm/gripper DEGRADED，相机不受影响，per-adapter 隔离）；历史/窗口批 ✔（extensions 按设备键）。
 
 ## 12. 决策点汇总（待评审）
 
 | # | 决策点 | 本文建议 |
 |---|--------|----------|
-| D1 | 设备树用扁平列表+引用，还是显式 parent 层级 | 扁平列表 + 引用 |
+| D1 | **已定案（2026-11-04，场景 13 驱动）**：组合层级 = adapters（传输分组）+ 组内子设备声明（describe_devices + channels）+ 派生节点引用（路线 1.5）；不采用显式 parent 深层级 | 采纳，v0.2 已按此修订 |
 | D2 | Heartbeat 增加逐设备健康列表 | 采纳（proto 只增） |
 | D3 | 常规 Observations 上行频率 | **修订（调研偏差 #4）**：对齐 0.5Hz（用户约束"所有观测 0.5Hz 上传"）；需把 sync_client 单节拍循环拆为"采样写缓冲 / 上行"双节拍 |
 | D4 | 窗口批扩展字段载荷格式 | BYTES 承载 `ObservationWindow` proto 序列化（键 `<源设备>.window`）；备选：拆 `data`/`ts` 两个张量字段 |
