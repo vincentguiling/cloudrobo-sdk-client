@@ -3,7 +3,7 @@
 > 本文件负责汇总业界"多设备管理（多本体 / 多末端 / 多传感器）"的实现方案，供 CloudRobo R2C 数据面 SDK 本版本设计参考；不属于本文件的内容：R2C 现有单设备实现细节见 `packages/cloudrobo-r2c/`（`docs/index.md`、`src/cloudrobo_r2c/common/protos/`），多设备方案设计定稿后另立设计文档。
 
 - 调研日期：2026-11-04
-- 结论摘要见[横向对比](#横向对比)、[对 R2C 多设备设计的启示](#对-r2c-多设备设计的启示)与[补充调研：设备树与派生能力抽象](#补充调研设备树与派生能力抽象六维力--2-秒历史示例)。
+- 结论摘要见[横向对比](#横向对比)、[对 R2C 多设备设计的启示](#对-r2c-多设备设计的启示)与[补充调研：设备树与派生能力抽象](#补充调研设备树与派生能力抽象六维力-2-秒历史示例)。
 - 每节末尾标注主要来源；公开资料无法核实的点如实标注"未能核实"。
 
 ## 背景与调研范围
@@ -298,13 +298,13 @@
 6. **云端管理：设备注册表 + 按设备计量 + 独立运维面。**
    - GCR 的设备注册表（密钥对 + 元数据 + cloud/robot 分区 status）、Genie Studio 的按 device 计量配额、Viam 的单表 readings 六级元数据、AimStudio/Genie Monitor 的独立"多机运维"模块——建议 R2C 云端侧把"设备"作为注册、配额、观测数据、健康度四类管理对象的最小单元。
 
-## 补充调研：设备树与派生能力抽象（"六维力 + 2 秒历史"示例）
+## 补充调研：设备树与派生能力抽象（六维力 2 秒历史示例）
 
 背景：目标形态是 Linux devicetree 式的设备树。驱动示例：云上模型同时需要"当前六维力"与"2 秒内六维力历史"；若没有嵌套/能力抽象，每个力传感器都要适配"有历史 / 无历史"两种变体。本节聚焦两个问题：① 业界的设备层级与引用关系怎么建；② "历史 / 滤波 / 坐标变换"这类派生能力业界怎么抽象。**核心结论：业界没有把"带历史"做成设备变体的先例——历史一律是设备之外的通用能力**，落点有三种：传输层环形缓冲、树上包装/派生节点、云端时序窗口。
 
 ### 1. 设备树与引用关系（业界的"树"长什么样）
 
-- **Linux devicetree**（官方规范 v0.4 chapter2，本次核验）：树结构描述系统硬件，"A devicetree is a tree data structure with nodes that describe the devices in a system. Each node has exactly one parent except for the root node"；跨节点引用用 **phandle**（目标节点持唯一 `<u32>`，引用方在属性里写该值）——组合靠"引用"而非"内嵌"。
+- **Linux devicetree**（官方规范 chapter2，本次核验）：树结构描述系统硬件，"A devicetree is a tree data structure with nodes that describe the devices in a system. Each node has exactly one parent except for the root node"；跨节点引用用 **phandle**（目标节点持唯一 `<u32>`，引用方在属性里写该值）——组合靠"引用"而非"内嵌"。
 - **Viam**：资源块 `depends_on` 字段声明依赖 + remote part 并入统一资源图 + `frame` 挂接空间关系（见第 1 节）——层级与引用双轨。
 - **YARP**（robotology/yarp `src/devices`，本次核验目录）：`multipleanalogsensorsremapper`（把多个模拟传感器设备聚合重映射为一个设备）、`controlBoardRemapper`、`frameTransformClient`（跨设备坐标变换本身也是树上的一个设备节点）——"多个同类设备聚合成一个虚拟设备"是 YARP 的原生组合原语。
 - **ros2_control**：接口全名 `<设备>/<信号>` + controller 链（见模式 B）；**Link-U OS**：topic 层级 `<设备类型>/<安装位>/<信号>`（见第 10 节）。
