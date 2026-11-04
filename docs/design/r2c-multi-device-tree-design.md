@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"方案 B（设备树 + 派生节点）的特性设计；不属于本文件的内容：业界调研依据见 [docs/research/r2c-multi-device-industry-survey.md](../research/r2c-multi-device-industry-survey.md)，R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
-> 状态：**初稿，待评审**。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
+> 状态：**v0.1 初稿——领域建模偏差已识别，待评审定案后出 v0.2**。经对 `packages/cloudrobo-r2c` 的完全调研（[docs/research/cloudrobo-r2c-codebase-survey.md](../research/r2c-multi-device-industry-survey.md) 同目录 `cloudrobo-r2c-codebase-survey.md`），本稿"devices 列表 = 多 adapter 聚合"的建模与代码现状有偏差（现状：一个 adapter = 一台整机，无聚合层；多设备是 adapter 内键前缀），组合层级需在"键空间树 / 声明式子设备清单 / adapter 树"三路线中定案（调研第 10 节）。已确认修正：常规 Observations 上行对齐 0.5Hz（决策点 D3 修订）；新 topic 需同步 session.py 与 TOPIC_DEFINITIONS 两处；30Hz 采样与 0.5Hz 上行需拆双节拍。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
 
 ## 1. 特性概述
 
@@ -245,7 +245,7 @@ message ObservationWindow {
 |---|--------|----------|
 | D1 | 设备树用扁平列表+引用，还是显式 parent 层级 | 扁平列表 + 引用 |
 | D2 | Heartbeat 增加逐设备健康列表 | 采纳（proto 只增） |
-| D3 | 常规 Observations 上行是否对齐 0.5Hz"快照模式" | 本版本不强制，维持 publish_hz |
+| D3 | 常规 Observations 上行频率 | **修订（调研偏差 #4）**：对齐 0.5Hz（用户约束"所有观测 0.5Hz 上传"）；需把 sync_client 单节拍循环拆为"采样写缓冲 / 上行"双节拍 |
 | D4 | 窗口批样本载荷用 ExtensionValue 还是强类型 | ExtensionValue |
 | D5 | 窗口批 health 与 Heartbeat 的分工 | 窗口批只描述本链路，整机以 Heartbeat 为准 |
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
