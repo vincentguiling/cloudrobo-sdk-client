@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"方案 B（设备树 + 派生节点）的特性设计；不属于本文件的内容：业界调研依据见 [docs/research/r2c-multi-device-industry-survey.md](../research/r2c-multi-device-industry-survey.md)，R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
-> 状态：**v0.1 初稿——领域建模偏差已识别，待评审定案后出 v0.2**。经对 `packages/cloudrobo-r2c` 的完全调研（[docs/research/cloudrobo-r2c-codebase-survey.md](../research/r2c-multi-device-industry-survey.md) 同目录 `cloudrobo-r2c-codebase-survey.md`），本稿"devices 列表 = 多 adapter 聚合"的建模与代码现状有偏差（现状：一个 adapter = 一台整机，无聚合层；多设备是 adapter 内键前缀），组合层级需在"键空间树 / 声明式子设备清单 / adapter 树"三路线中定案（调研第 10 节）。已确认修正：常规 Observations 上行对齐 0.5Hz（决策点 D3 修订）；新 topic 需同步 session.py 与 TOPIC_DEFINITIONS 两处；30Hz 采样与 0.5Hz 上行需拆双节拍。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
+> 状态：**v0.1 初稿——领域建模偏差已识别，待评审定案后出 v0.2**。经对 `packages/cloudrobo-r2c` 的完全调研（[docs/research/cloudrobo-r2c-codebase-survey.md](../research/r2c-multi-device-industry-survey.md) 同目录 `cloudrobo-r2c-codebase-survey.md`），本稿"devices 列表 = 多 adapter 聚合"的建模与代码现状有偏差（现状：一个 adapter = 一台整机，无聚合层；多设备是 adapter 内键前缀），组合层级需在"键空间树 / 声明式子设备清单 / adapter 树"三路线中定案（调研第 10 节）。已确认修正：常规 Observations 上行对齐 0.5Hz（决策点 D3 修订）；窗口批经 extensions 随唯一观测入口 `{p}/{d}/inference/observations` 上行、不新起 topic（2026-11-04 定案，D7 已闭合）；30Hz 采样与 0.5Hz 上行需拆双节拍。章节按华为特性设计模板（特性概述 / 术语 / 需求分析 / 总体方案 / 详细设计 / 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）组织；如团队有官方模板表单，本文各节内容可按编号 1:1 迁入。
 
 ## 1. 特性概述
 
@@ -31,7 +31,7 @@
 | 源设备（source） | 直接对接硬件/厂商 SDK 的设备节点（本体、末端、传感器），由现有 adapter 体系实现 |
 | 派生节点（derived） | 以一个或多个源设备的输出为输入、产出派生信号的节点；本版本实现 `history`，预留 `filter` / `tf` |
 | 环形缓冲（ring buffer） | SDK 通用组件：按 `(设备, 通道)` 维度缓存最近 `ceil(window_s × sample_hz)` 个样本，溢出覆盖最旧 |
-| 窗口批（window batch） | `history` 节点按 `publish_hz` 发布的一条消息：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
+| 窗口批（window batch） | `history` 节点按 `publish_hz` 注入 `Observations.extensions` 的一组扩展字段（键 `<源设备>.window`）：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
 | 样本（sample） | 一个时刻的设备读数：`timestamp` + 数据载荷（复用 `ExtensionValue` 自描述结构） |
 
 ## 3. 需求分析
@@ -59,9 +59,10 @@ DeviceManager（每 R2CClient 一个）
   │        └─ 每 2s: 截窗 [now-2s, now) → ObservationWindow → Zenoh
   └── 派生: ...(filter/tf 预留)
   ▼
-Zenoh: {project_id}/{device_id}/observations/window/{node_name}
+Zenoh: {project_id}/{device_id}/inference/observations（观测唯一入口，不新起 topic）
+  │  窗口批经 extensions 扩展字段随观测上行：extensions["<源设备>.window"]
   ▼
-云模型（0.5Hz 订阅消费，纯订阅、无查询往返）
+云模型（0.5Hz 订阅消费；云端不感知派生节点，只按约定键读 extensions）
 ```
 
 设计原则（对应调研结论）：
@@ -84,7 +85,7 @@ sequenceDiagram
     loop 每 2s (0.5Hz)
         H->>R: snapshot [now-2s, now)
         R-->>H: ≤60 样本 + health
-        H->>Z: publish ObservationWindow(current + samples + header)
+        H->>Z: publish Observations（窗口批注入 extensions["<源设备>.window"]）
         Z-->>C: 订阅消费（每次模型调用一份快照）
     end
 ```
@@ -119,8 +120,7 @@ devices:
     type: derived/history
     input: left_ft                # 引用（phandle 式）：单输入；多输入能力预留 input: [a, b]
     params:
-      window_s: 2.0
-      publish_hz: 0.5             # 与云模型调用频率一致
+      window_s: 2.0               # 窗口批随观测上行（观测上行频率 = 模型调用频率，见 5.3 / D3），节点不再单独配 publish_hz
 ```
 
 字段与校验规则：
@@ -130,7 +130,7 @@ devices:
 | `name` 树内唯一 | 对齐 Viam 资源 name / ros2_control 块名；消息与 topic 按 name 引用 |
 | `derived` 节点必须有 `input` | 引用必须指向已定义设备；允许引用派生节点（链式），配置加载时做无环检测 |
 | 容量上限 | `window_s × sample_hz ≤ 4096`（防误配），超出拒绝加载并报错 |
-| `derived/history` 参数默认值 | `window_s: 2.0`、`publish_hz: 0.5`（可覆盖） |
+| `derived/history` 参数默认值 | `window_s: 2.0`（窗口批随观测上行，观测频率即模型调用频率，节点无独立发布频率） |
 | 兼容 | 配置无 `devices` 块时，完全沿用 v2.1 单 `hardware` 块行为，不加载 DeviceManager |
 
 **决策点 D1**：`devices` 列表是否需要显式层级字段（如 `parent`）？当前设计为"扁平列表 + 引用"，树形仅是引用关系图（业界证据：devicetree 单亲树 + phandle；Viam depends_on）。建议保持扁平，评审确认。
@@ -147,7 +147,7 @@ devices:
 | 数据 | 频率 | 去向 |
 |------|------|------|
 | 源设备原始采样（如 30Hz 六维力） | 30Hz | **仅端侧** RingBuffer，不出端（约束 C1） |
-| 窗口批（history 派生节点输出） | 0.5Hz | Zenoh：`{project_id}/{device_id}/observations/window/{node_name}`（**新增 topic，非现有**；命名待评审，见决策点 D7；实现需同步修改 `client/session.py` 的 f-string 拼接与 `transport/zenoh.py` 的 `TOPIC_DEFINITIONS` 两处，并扩展 QoS 表——调研偏差 #3） |
+| 窗口批（history 派生节点输出） | 0.5Hz | **不新起 topic**：随 `Observations` 在唯一观测入口 `{project_id}/{device_id}/inference/observations` 上行，经 `extensions` 扩展字段承载（2026-11-04 定案）；键按源设备命名，云端不感知派生节点 |
 | 常规 Observations（joint_states 等） | 维持现有 `runtime.publish_hz` | 沿用现有 topic（**决策点 D3**：是否为配合 0.5Hz 模型调用引入"快照模式"，本版本不强制） |
 | Actions 下行 | 模型调用驱动 | 沿用现有 topic 与结构（多末端按设备键路由沿用 `end_effector_poses` map 模式） |
 
@@ -155,7 +155,16 @@ QoS / 可靠性：窗口批使用可靠传输（丢一批代价是模型拿到 4
 
 ### 5.4 消息设计（Protobuf，只增不改）
 
-新增 `observation_window.proto`（包 `r2c_sdk`，与现有 proto 同目录、同编译链）：
+窗口批**不新起 topic、不新增顶层消息**：随现有 `Observations.extensions`（`map<string, ExtensionValue>`）在唯一观测入口上行。新增 `observation_window.proto`（包 `r2c_sdk`）仅作为扩展字段的载荷结构：
+
+```text
+extensions["<源设备名>.window"] = ExtensionValue{
+  dtype: BYTES,
+  data:  ObservationWindow 序列化字节   # 见下
+}
+```
+
+键名按**源设备**命名（如 `left_ft.window`），云端按约定键读取，**不感知派生节点**（node 名只在端侧存在）。载荷 proto：
 
 ```protobuf
 message WindowSample {
@@ -246,7 +255,7 @@ message ObservationWindow {
 | D1 | 设备树用扁平列表+引用，还是显式 parent 层级 | 扁平列表 + 引用 |
 | D2 | Heartbeat 增加逐设备健康列表 | 采纳（proto 只增） |
 | D3 | 常规 Observations 上行频率 | **修订（调研偏差 #4）**：对齐 0.5Hz（用户约束"所有观测 0.5Hz 上传"）；需把 sync_client 单节拍循环拆为"采样写缓冲 / 上行"双节拍 |
-| D4 | 窗口批样本载荷用 ExtensionValue 还是强类型 | ExtensionValue |
+| D4 | 窗口批扩展字段载荷格式 | BYTES 承载 `ObservationWindow` proto 序列化（键 `<源设备>.window`）；备选：拆 `data`/`ts` 两个张量字段 |
 | D5 | 窗口批 health 与 Heartbeat 的分工 | 窗口批只描述本链路，整机以 Heartbeat 为准 |
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
-| D7 | 窗口批 topic 命名（`observations/window/{node}` 为本稿提议，非现有约定） | 评审定命名段位（候选：`observations/window/…`、`state/window/…`）；实现时同步 session.py 与 TOPIC_DEFINITIONS 两处 |
+| D7 | **已定案（2026-11-04）**：不新起 topic；观测唯一入口 `{p}/{d}/inference/observations`；窗口批经 extensions 上行，云端不感知 node | 采纳；扩展键按源设备命名（如 `left_ft.window`），node 名仅端侧内部使用 |
