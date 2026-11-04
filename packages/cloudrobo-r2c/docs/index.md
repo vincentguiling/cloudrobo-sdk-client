@@ -13,6 +13,7 @@ R2C SDK 提供机器人端与云端之间的实时数据通道：
 - **图像编码**：H264（传输）/ jpeg / webp / png（扩展字段）
 - **相机推流**：LiveKit WebRTC（可选，`camera` extra）
 - **数据面转发**：forwarder 将本地主链路数据透传到云端会话
+- **遥操与数据采集**：主从臂（LeRobot 主臂）/ VR 输入源 → Actions，观测+动作成对录制（`teleop/`）
 
 ## 安装
 
@@ -48,6 +49,10 @@ cloudrobo r2c client --client-config config/client_config.yaml --robot-config co
 cloudrobo r2c client --bundle config/<cert-config.zip> \
   --robot-config config/robot_dummy_realcam_config.yaml \
   --forwarder-config config/forwarder_config.yaml
+
+# 遥操操作端（主从臂，局域网直连；远程换 --bundle）
+cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \
+  --endpoints tcp/<机器人IP>:7447 --record teleop_session.r2cr
 ```
 
 ## 核心概念
@@ -63,6 +68,7 @@ cloudrobo r2c client --bundle config/<cert-config.zip> \
 | Forwarder | 本地主会话 ↔ 云端会话的原始数据透传（`forwarder.py`） |
 | EventManager | 告警/事件单例发布（限频 + 缓存补发） |
 | ModeControl | AUTO / CONTROLLED / ASSISTED 运行模式统一决策 |
+| TeleopOperator | 遥操操作端：主从臂/VR 输入源 → Actions + 数据采集（`teleop/`） |
 | ProtoRegistry | 通过 `r2c_sdk.protos` entry-point 解析第三方 proto |
 
 ## 消息 Topic
@@ -90,3 +96,4 @@ cloudrobo r2c client --bundle config/<cert-config.zip> \
 |------|------|
 | [命令参考](commands.md) | CLI 命令详情 |
 | [使用示例](examples.md) | SDK/CLI 使用示例 |
+| [遥操与数据采集](teleop.md) | 主从臂 / VR 遥操、现场与远程遥操、录制 |

@@ -127,7 +127,17 @@ cloudrobo r2c client --project-id test-tenant --device-id device-001 --endpoints
 
 # 录制观测数据
 cloudrobo r2c client --client-config config/client_config.yaml --record observations.pkl --duration 60
+
+# 遥操操作端：主从臂（局域网现场遥操，录制遥操数据集）
+cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \
+    --endpoints tcp/<机器人IP>:7447 --record teleop_session.r2cr
+
+# 遥操操作端：VR（远程遥操走平台证书；无 VR 设备先跑 mock 发送端联调）
+python examples/vr_pose_mock_sender.py --port 9870
+cloudrobo r2c teleop --teleop-config config/teleop_vr_udp.yaml --bundle config/certs/cert_xxx.zip
 ```
+
+遥操配置、输入源协议与录制格式详见 [遥操与数据采集](teleop.md)。
 
 ## 更多示例
 
@@ -138,6 +148,7 @@ cloudrobo r2c client --client-config config/client_config.yaml --record observat
 - `heartbeat_publisher.py`：心跳发布
 - `command_publisher.py` / `event_publisher.py` / `mock_taskprocess_pub.py`：命令、事件、任务进度发布
 - `topic_recorder.py` / `topic_replayer.py`：话题录制与回放
+- `vr_pose_mock_sender.py`：VR 姿态流 mock 发送端（`vr_udp` 遥操源联调）
 - `connect_with_bundle.py` / `connect_bundle_encrypted_key.py`：证书 bundle 连接
 - `jaka_app.py` / `q25_cloud_adapter.py` / `so101_app.py` / `s05_cloud_adapter.py` / `xifeng_cloud_adapter.py`：各机器人型号适配
 - `ros_adapter/`、`so101_real/`、`songyi/`、`ur5e_transformer/`、`third_party_adapter/`：完整接入与扩展示例

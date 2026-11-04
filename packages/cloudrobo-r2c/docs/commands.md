@@ -39,6 +39,33 @@ cloudrobo r2c client [OPTIONS]
 
 > 连接回退：当 `--mode` 与 `--endpoint-role` 均未显式指定时，若默认连接失败，会以 `mode=peer, endpoint_role=listen` 重试一次。
 
+## r2c teleop
+
+启动遥操操作端（主从臂 / VR 输入 → Actions，含遥操数据采集）。
+
+```bash
+cloudrobo r2c teleop [OPTIONS]
+```
+
+**常用选项**（会话参数与 `r2c client` 一致，透传到底层 argparse）：
+
+| 选项 | 默认值 | 说明 |
+|------|--------|------|
+| `--teleop-config` | （必填） | 遥操配置 YAML（`teleop:` 节：source/action/safety/recording） |
+| `--bundle` | - | 平台证书 bundle（远程遥操） |
+| `--client-config` | - | R2C 客户端配置 YAML（局域网/显式端点） |
+| `--project-id` / `--device-id` | r2c / local | 目标机器人项目与设备 ID |
+| `--client-id` | - | 客户端 ID |
+| `--endpoints` | - | Zenoh 端点（逗号分隔；LAN 直连：`tcp/<机器人IP>:7447`） |
+| `--mode` / `--endpoint-role` | peer / connect | zenoh 连接模式与角色 |
+| `--duration` | 0 | 运行时长（秒），0 = 直到 Ctrl+C |
+| `--record` | 配置为准 | 录制路径（`.r2cr`），同时强制开启录制 |
+| `--no-record` | 关闭 | 强制关闭录制 |
+| `--log-level` / `--log-file` | INFO / - | 日志 |
+
+输入源（`lerobot_leader` 主从臂 / `vr_udp` VR / `mock_joints` 联调）、配置项、
+安全策略与录制格式详见 [遥操与数据采集](teleop.md)。
+
 ## 配置能力
 
 ### 心跳（`runtime.heartbeat`）

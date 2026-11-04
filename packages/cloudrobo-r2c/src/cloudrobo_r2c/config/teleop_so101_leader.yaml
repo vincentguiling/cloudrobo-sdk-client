@@ -1,0 +1,44 @@
+# ── 遥操操作端配置：主从臂（LeRobot SO101 主臂） ──────────────────────────
+# 搭配机器人端 config/robot_so101_lerobot_config.yaml 使用：
+#   机器人端: cloudrobo r2c client --client-config ... --robot-config config/robot_so101_lerobot_config.yaml
+#   操作端(局域网现场遥操):
+#     cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \
+#         --endpoints tcp/<机器人IP>:7447 --record teleop_session.r2cr
+#   操作端(互联网远程遥操): 把 --endpoints 换成 --bundle <平台证书zip>
+#     （或云端 zenoh 接入点的 client-config）；相机画面由机器人端
+#     camera_streaming 经 LiveKit 推流，云端控制台拉流观看。
+#
+# 主臂关节值直接透传（同单位同序），joint_map 的 value 顺序必须与机器人
+# 侧 r2c_to_device 映射的 source_index 0..N 对齐。
+teleop:
+  source:
+    type: lerobot_leader
+    config:
+      type: so101_leader        # LeRobot TeleoperatorConfig 类型
+      port: /dev/ttyACM1        # 主臂串口（与从臂区分）
+      id: L12345678             # 主臂标定 id
+      calibration_dir: null     # null = HF 默认标定目录
+      connect_kwargs:
+        calibrate: false        # 无人值守场景必须显式 false（避免交互式标定）
+      # gripper_range: [0, 100] # 可选：设置后额外输出归一化夹爪开度
+
+  action:
+    mode: joint                 # joint | end_effector_pose
+    action_hz: 30.0
+    joint_map:                  # 主臂关节键（get_action 去 .pos）→ 机器人 R2C 关节名
+      shoulder_pan: joint_1
+      shoulder_lift: joint_2
+      elbow_flex: joint_3
+      wrist_flex: joint_4
+      wrist_roll: joint_5
+      gripper: joint_6
+    # joint_scale:               # 可选：主从臂单位/镜像不一致时按关节缩放
+    #   shoulder_pan: -1.0
+
+  safety:
+    require_observation: true   # 未收到机器人观测前不发动作
+    observation_timeout_s: 2.0  # 观测中断超时后停发动作（恢复后自动继续）
+
+  recording:
+    enabled: true               # 遥操数据采集：(最新观测, 已发布动作) 成对落盘
+    path: teleop_session.r2cr
