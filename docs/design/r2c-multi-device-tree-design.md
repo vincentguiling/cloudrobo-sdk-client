@@ -147,7 +147,7 @@ devices:
 | 数据 | 频率 | 去向 |
 |------|------|------|
 | 源设备原始采样（如 30Hz 六维力） | 30Hz | **仅端侧** RingBuffer，不出端（约束 C1） |
-| 窗口批（history 派生节点输出） | 0.5Hz | Zenoh：`{project_id}/{device_id}/observations/window/{node_name}` |
+| 窗口批（history 派生节点输出） | 0.5Hz | Zenoh：`{project_id}/{device_id}/observations/window/{node_name}`（**新增 topic，非现有**；命名待评审，见决策点 D7；实现需同步修改 `client/session.py` 的 f-string 拼接与 `transport/zenoh.py` 的 `TOPIC_DEFINITIONS` 两处，并扩展 QoS 表——调研偏差 #3） |
 | 常规 Observations（joint_states 等） | 维持现有 `runtime.publish_hz` | 沿用现有 topic（**决策点 D3**：是否为配合 0.5Hz 模型调用引入"快照模式"，本版本不强制） |
 | Actions 下行 | 模型调用驱动 | 沿用现有 topic 与结构（多末端按设备键路由沿用 `end_effector_poses` map 模式） |
 
@@ -249,3 +249,4 @@ message ObservationWindow {
 | D4 | 窗口批样本载荷用 ExtensionValue 还是强类型 | ExtensionValue |
 | D5 | 窗口批 health 与 Heartbeat 的分工 | 窗口批只描述本链路，整机以 Heartbeat 为准 |
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
+| D7 | 窗口批 topic 命名（`observations/window/{node}` 为本稿提议，非现有约定） | 评审定命名段位（候选：`observations/window/…`、`state/window/…`）；实现时同步 session.py 与 TOPIC_DEFINITIONS 两处 |
