@@ -3,7 +3,7 @@
 > 本文件负责汇总业界"多设备管理（多本体 / 多末端 / 多传感器）"的实现方案，供 CloudRobo R2C 数据面 SDK 本版本设计参考；不属于本文件的内容：R2C 现有单设备实现细节见 `packages/cloudrobo-r2c/`（`docs/index.md`、`src/cloudrobo_r2c/common/protos/`），多设备方案设计定稿后另立设计文档。
 
 - 调研日期：2026-11-04
-- 结论摘要见[横向对比](#横向对比)与[对 R2C 多设备设计的启示](#对-r2c-多设备设计的启示)。
+- 结论摘要见[横向对比](#横向对比)、[对 R2C 多设备设计的启示](#对-r2c-多设备设计的启示)与[补充调研：设备树与派生能力抽象](#补充调研设备树与派生能力抽象六维力--2-秒历史示例)。
 - 每节末尾标注主要来源；公开资料无法核实的点如实标注"未能核实"。
 
 ## 背景与调研范围
@@ -297,6 +297,48 @@
    - 单本体内多末端：动作消息按设备键路由（现 end_effector map 模式）+ 可选接口独占仲裁（ros2_control）；多本体：保持每 device_id 独立执行体，云端只做任务定向（GCR 定向同步）与编排，不承诺云侧实时协调（ABB MultiMove 佐证协同在控制器层）。
 6. **云端管理：设备注册表 + 按设备计量 + 独立运维面。**
    - GCR 的设备注册表（密钥对 + 元数据 + cloud/robot 分区 status）、Genie Studio 的按 device 计量配额、Viam 的单表 readings 六级元数据、AimStudio/Genie Monitor 的独立"多机运维"模块——建议 R2C 云端侧把"设备"作为注册、配额、观测数据、健康度四类管理对象的最小单元。
+
+## 补充调研：设备树与派生能力抽象（"六维力 + 2 秒历史"示例）
+
+背景：目标形态是 Linux devicetree 式的设备树。驱动示例：云上模型同时需要"当前六维力"与"2 秒内六维力历史"；若没有嵌套/能力抽象，每个力传感器都要适配"有历史 / 无历史"两种变体。本节聚焦两个问题：① 业界的设备层级与引用关系怎么建；② "历史 / 滤波 / 坐标变换"这类派生能力业界怎么抽象。**核心结论：业界没有把"带历史"做成设备变体的先例——历史一律是设备之外的通用能力**，落点有三种：传输层环形缓冲、树上包装/派生节点、云端时序窗口。
+
+### 1. 设备树与引用关系（业界的"树"长什么样）
+
+- **Linux devicetree**（官方规范 v0.4 chapter2，本次核验）：树结构描述系统硬件，"A devicetree is a tree data structure with nodes that describe the devices in a system. Each node has exactly one parent except for the root node"；跨节点引用用 **phandle**（目标节点持唯一 `<u32>`，引用方在属性里写该值）——组合靠"引用"而非"内嵌"。
+- **Viam**：资源块 `depends_on` 字段声明依赖 + remote part 并入统一资源图 + `frame` 挂接空间关系（见第 1 节）——层级与引用双轨。
+- **YARP**（robotology/yarp `src/devices`，本次核验目录）：`multipleanalogsensorsremapper`（把多个模拟传感器设备聚合重映射为一个设备）、`controlBoardRemapper`、`frameTransformClient`（跨设备坐标变换本身也是树上的一个设备节点）——"多个同类设备聚合成一个虚拟设备"是 YARP 的原生组合原语。
+- **ros2_control**：接口全名 `<设备>/<信号>` + controller 链（见模式 B）；**Link-U OS**：topic 层级 `<设备类型>/<安装位>/<信号>`（见第 10 节）。
+- 共性：**树负责"是谁、挂在哪"，引用（phandle / depends_on / 接口名 / topic 名）负责"用谁"**。r2c 若引入设备树，建议"浅层级 + 引用"双轨，避免深树内嵌导致配置脆弱。
+
+### 2. 派生能力（历史 / 滤波 / 变换）的三种业界落点
+
+**模式 A：传输层环形缓冲——历史是传输原语，设备零适配**
+
+- **Linux IIO 子系统**（kernel.org `driver-api/iio/buffers.html`，本次核验）：任意 IIO 设备都可挂 **buffer**——`length`（样本容量）、`enable`（激活采集）、`scan_elements/`（选择入缓冲的通道），由 trigger 触发采集。历史/缓存是设备之外的通用子系统，不是某个传感器的驱动变体。
+- **DDS HistoryQosPolicy**（eProsima FastDDS API 文档，本次核验）：`KEEP_LAST_HISTORY_QOS` + `depth`（默认 1，可设 N）——DataWriter "on behalf of existing DataReader entities" 维护最近 N 个样本。历史是每 topic 的 QoS，不是设备代码。
+- **Zenoh AdvancedPublisher + CacheConfig(max_samples=N)**（eclipse-zenoh/zenoh-python 官方示例 `z_advanced_pub.py`，本次核验）：publisher 侧声明 `cache=CacheConfig(max_samples=history)`，另有 `sample_miss_detection`（heartbeat 丢样检测）；订阅侧 `z_advanced_sub.py` 可查询历史样本，`z_storage.py` 提供存储/查询形态。**与 r2c 同传输栈："2 秒历史" = `max_samples ≈ 2s × publish_hz`，传感器适配只写一次。**
+- 注意：DDS/Zenoh 的历史粒度是"样本数"而非"时间窗"——时间窗 = 样本数 × 周期，需按各设备 `publish_hz` 折算（IIO 的 `length` 同理）；时间戳必须随样本走（Zenoh attachment 携带 seq/时间戳的做法可借鉴，见第 3 节）。
+
+**模式 B：树上的"包装 / 派生设备"节点**
+
+- **YARP remapper 族**（见上）：聚合、重映射、坐标变换都以"设备"形态挂在树上。
+- **ros2_control controller chaining**（admittance_controller userdoc，本次核验参数：`chainable_command_interfaces` 导出 reference 接口，`command_joints` "only relevant when chaining the output of this controller to the input of another controller"）：admittance 控制器消费 FTS state interface、把派生结果作为链上接口交给下游控制器——"力反馈 → 轨迹修正"是链上的控制器，而不是力传感器的第二种驱动。
+- **Viam**：`depends_on` + service 包装组件产出派生数据；观测按"资源 × 方法"入单表 readings（第 1 节已核验）。
+- 对 r2c 的映射：设备树允许"派生节点"类型（`history` / `filter` / `tf`），声明输入引用（phandle 式）+ 窗口参数，SDK 通用实现一次、所有输入设备复用。
+
+**模式 C：云端时序窗口（历史在云端，不在端侧）**
+
+- Viam 数据平台：所有 readings 入单表、带双时间戳与六级元数据（第 1 节已核验），历史是查询而非设备能力。
+- r2c 的 data ingestion / 回流通道已是入湖路径：力数据按 `{project_id}/{device_id}` 入湖后，云模型的"2 秒窗口"由查询层（窗口聚合）提供；代价是时延与可用性依赖在线查询，不适合实时控制环，适合训练/回放类消费。
+
+### 3. 对 r2c 的落地建议（按优先级）
+
+1. **方案 A（推荐起步）**：数据面为需要的 topic 声明 Zenoh 缓存（`CacheConfig(max_samples=窗口样本数)`），云侧订阅先查历史再续订阅；设备配置只加一个声明字段（如 `history_window_s: 2`），不改任何设备适配器。核对点：所用 zenoh-python 版本的 AdvancedPublisher/Cache API 可用性、带宽与内存上限（max_samples）。
+2. **方案 B（设备树建立后）**：树中引入"派生节点"（history/filter/tf），phandle 式引用输入设备 + 窗口参数；环形缓冲通用实现进 SDK，与方案 A 共用同一份代码。
+3. **方案 C（数据入湖后）**：云端窗口查询补齐"离线 / 大窗口 / 训练回放"需求。
+4. **不做的事**：不为每类传感器实现"带历史"变体（业界无先例，且派生能力数量增长时适配数线性爆炸）；时间基准统一放在 `Observations.timestamp` + 传输层 attachment（seq/发送时刻），窗口对齐以此为准。
+
+来源：devicetree 规范 chapter2（devicetree-org/devicetree-specification，单亲树 + phandle，本次核验）；kernel.org `driver-api/iio/buffers.html`（本次核验）；eProsima FastDDS HistoryQosPolicy（本次核验）；eclipse-zenoh/zenoh-python `examples/z_advanced_pub.py`、`z_advanced_sub.py`、`z_storage.py`（本次核验）；robotology/yarp `src/devices` 目录（本次核验）；control.ros.org admittance_controller userdoc（本次核验）；docs.viam.com（见第 1 节）。
 
 ## 附录：调研方法与未能核实项
 
