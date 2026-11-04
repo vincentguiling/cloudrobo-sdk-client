@@ -1,6 +1,6 @@
 # 基于 R2C 的多设备管理：业界实现调研
 
-> 本文件负责汇总业界"多设备管理（多本体 / 多末端 / 多传感器）"的实现方案，供 CloudRobo R2C 数据面 SDK 本版本设计参考；不属于本文件的内容：R2C 现有单设备实现细节见 `packages/cloudrobo-r2c/`（`docs/index.md`、`src/cloudrobo_r2c/common/protos/`），多设备方案设计定稿后另立设计文档。
+> 本文件负责汇总业界"多设备管理（多本体 / 多末端 / 多传感器）"的实现方案，供 CloudRobo R2C 数据面 SDK 本版本设计参考；不属于本文件的内容：R2C 现有单设备实现细节见 `packages/cloudrobo-r2c/`（`docs/index.md`、`src/cloudrobo_r2c/common/protos/`），基于本文结论的方案 B 特性设计见 [docs/design/r2c-multi-device-tree-design.md](../design/r2c-multi-device-tree-design.md)。
 
 - 调研日期：2026-11-04
 - 结论摘要见[横向对比](#横向对比)、[对 R2C 多设备设计的启示](#对-r2c-多设备设计的启示)与[补充调研：设备树与派生能力抽象](#补充调研设备树与派生能力抽象六维力-2-秒历史示例)。
