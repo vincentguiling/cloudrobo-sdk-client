@@ -1,8 +1,8 @@
-# R2C 遥操与数据采集特性设计
+﻿# R2C 遥操与数据采集特性设计
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v0.6，待评审**。v0.5：①`teleop/observations` **只在本地流转、不上云**（由本地操作台端录制保存），数据格式与内容与 `inference/observations` 一致；**图像通过推拉流上云**；②遥操输入两类：**同构臂遥操**（操作前位姿对齐到当前位姿，读 `inference/observations`）；**VR 遥操**（相对位姿，首帧对齐 `end_effector_pose`）；③`teleop/actions` 下发频率 **20Hz**。v0.6 增补（2026-11-05 反馈）：**新增 `teleop/start|pause|resume|finish|quit` 五个会话生命周期话题**；**非数采状态下客户端不接收&执行 `teleop/actions`**；**给出 client 改进方案**（r2c 增量 vs 独立 teleop 包，参考 metaquest-dist 设计资料，见 §11）。更早版本：teleop 动作/观测独立话题、采集录 teleop 两话题、客户端不区分本地/远程。只出设计，不含实现。
+> 状态：**v0.7，待评审**。一致性修订（2026-11-05）：统一"会话生命周期门控"与"发布权交接"的表述——客户端维护会话状态并据此门控，发布权交接是上层编排语义（客户端不判断接管权限）；执行规则明确为会话状态 + 新鲜度两层判定。v0.5：①`teleop/observations` **只在本地流转、不上云**（由本地操作台端录制保存），数据格式与内容与 `inference/observations` 一致；**图像通过推拉流上云**；②遥操输入两类：**同构臂遥操**（操作前位姿对齐到当前位姿，读 `inference/observations`）；**VR 遥操**（相对位姿，首帧对齐 `end_effector_pose`）；③`teleop/actions` 下发频率 **20Hz**。v0.6 增补（2026-11-05 反馈）：**新增 `teleop/start|pause|resume|finish|quit` 五个会话生命周期话题**；**非数采状态下客户端不接收&执行 `teleop/actions`**；**给出 client 改进方案**（r2c 增量 vs 独立 teleop 包，参考 metaquest-dist 设计资料，见 §11）。更早版本：teleop 动作/观测独立话题、采集录 teleop 两话题、客户端不区分本地/远程。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -41,7 +41,7 @@
 
 ### 2.2 场景分析
 
-**场景 1：遥操接管（主力）。** 策略在 `inference/actions` 上执行；操作员接管，开始向 `teleop/actions`（20Hz）发布。客户端检测到新鲜遥操动作即以遥操为准；操作台停止发布后回退到策略动作。接管期间 `teleop/observations` 按 `publish_hz` 本地发布（操作台反馈 + 本地录制），图像另行推拉流上云供远程观看。
+**场景 1：遥操接管（主力）。** 策略在 `inference/actions` 上执行；操作员发 `teleop/start` 进入会话（RUNNING），开始向 `teleop/actions`（20Hz）发布。客户端在该状态下以新鲜遥操为准；操作台停止发布后自动回退策略动作，会话仍为 RUNNING；`pause` 则整机保持。接管期间 `teleop/observations` 按 `publish_hz` 本地发布（操作台反馈 + 本地录制），图像另行推拉流上云供远程观看。
 
 **场景 2：同构臂遥操（同型号臂作主臂）。** 开始遥操前，客户端/操作台先把同构臂（主臂）的位姿**对齐到当前从臂位姿**（读 `inference/observations` 的当前 `end_effector_pose`/关节位姿），对齐完成前不下发动作；对齐后主臂增量即从臂增量。
 
@@ -83,8 +83,9 @@
 | 推拉流 | 图像上云方式：客户端把相机画面推到流媒体服务，云端/远程操作台拉流观看；teleop/observations 不承载图像上云 |
 | 同构臂位姿预对齐 | 同构臂遥操开始前，把主臂位姿调整到与从臂当前位姿一致（读 `inference/observations`），对齐完成前不下发动作 |
 | VR 相对位姿遥操 | VR 首帧位姿与从臂当前 `end_effector_pose` 对齐建立参考系，之后按 VR 相对位姿增量驱动 |
-| 动作来源仲裁 | 客户端在遥操动作与策略动作之间的执行选择规则：遥操新鲜优先，超时回退策略 |
-| 发布权交接 | 接管/交还的实现方式：操作台开始/停止发布 `teleop/actions`，客户端不感知"接管"概念 |
+| 动作来源仲裁 | 客户端在遥操动作与策略动作之间的执行选择规则：会话 RUNNING 时遥操新鲜优先，遥操过期回退策略；PAUSED 两路都停 |
+| 会话状态门控 | 客户端维护数采会话状态（IDLE/RUNNING/PAUSED/FINISHING），仅 RUNNING 接收执行 `teleop/actions`；**客户端感知"会话状态"，但不判断"接管权限/归属"**（谁可接管由 Zenoh ACL 与操作台约定） |
+| 发布权交接 | 上层编排语义：会话开始时策略停止下发、操作台开始发布 `teleop/actions`（反之亦然）；客户端不跟踪"谁在控制"，只按会话状态 + 动作新鲜度执行 |
 | 录制器 | 订阅指定 topic、按到达时序落盘的订阅者（R2CR 格式） |
 
 ## 3. 功能方案
@@ -117,7 +118,7 @@
 | 图像上云 | **推拉流**：客户端推相机流到流媒体服务，云端/远程拉流 | 高频图像不走 Zenoh 观测话题；teleop/observations 保持轻量 |
 | 同构臂预对齐 | 遥操开始前读 `inference/observations` 当前位姿，主臂对齐后才进入跟随 | 消除初始位姿差，避免起跳 |
 | VR 相对位姿 | 首帧 VR 位姿与 `end_effector_pose` 对齐，后续按增量映射 | VR 无物理对齐手段，用参考系平移 |
-| 仲裁规则 | 收到 `teleop/actions` 且在 `timeout_ms` 内 → 执行遥操；否则回退 `inference/actions`；两者都超时 → 停止 | 简单、确定、客户端无需接管状态机 |
+| 仲裁规则 | 会话状态 + 新鲜度两层判定：RUNNING 时 `teleop/actions` 新鲜（≤`timeout_ms`）→ 执行遥操，过期则回退策略；PAUSED → 两路都停（保持）；IDLE/FINISHING → 只执行策略 | 门控由会话状态承担，客户端不实现"接管权限"模型 |
 | 本地/远程 | 不区分，同一话题 | 去掉客户端模式分支 |
 | 采集 | 本地端录制 `teleop/actions` + `teleop/observations` | 与约定一致；R2CR 落盘；录制器在本地操作台侧 |
 
@@ -125,7 +126,7 @@
 
 ```text
 发布端                                          客户端
-  ├── 自主策略 ──► inference/actions ─────────► 仲裁（遥操新鲜优先）
+  ├── 自主策略 ──► inference/actions ─────────► 会话门控 + 新鲜度仲裁
   └── 操作台(本地/远程) ──► teleop/actions(20Hz) ─┘        │
                                                        ▼
                                                 限幅/安全检查 → 设备
@@ -148,7 +149,8 @@ sequenceDiagram
     participant R as 本地录制器
 
     P->>C: inference/actions（自主）
-    Note over O,C: 开始遥操
+    O->>C: teleop/start（进入 RUNNING 会话，录制启动）
+    Note over O,C: 会话 RUNNING：仅此状态执行遥操动作
     O->>C: 读取当前位姿请求（读 inference/observations）
     C-->>O: 当前 end_effector_pose / 关节位姿
     alt 同构臂
@@ -156,7 +158,7 @@ sequenceDiagram
     else VR
         O->>O: 首帧 VR 位姿与 end_effector_pose 对齐（建参考系）
     end
-    loop 遥操（20Hz）
+    loop 遥操（RUNNING，20Hz）
         O->>ZA: 遥操动作
         ZA->>C: 收到遥操动作
         C->>F: 执行（遥操优先）
@@ -175,13 +177,17 @@ sequenceDiagram
 
 #### 3.3.1 功能原理
 
-- **动作订阅与仲裁**：客户端同时订阅 `inference/actions` 与 `teleop/actions`（20Hz 操作节拍）。执行规则：若最近 `timeout_ms`（默认 300ms）内收到遥操动作 → 执行遥操；否则若策略动作新鲜 → 执行策略；两者都超时 → 停止执行并保持。仲裁只在来源之间选择，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
+- **动作订阅与执行规则（会话状态 + 新鲜度两层判定）**：客户端同时订阅 `inference/actions` 与 `teleop/actions`（20Hz 操作节拍）。
+  - `IDLE` / `FINISHING`：只执行 `inference/actions`；`teleop/actions` 丢弃（计数告警）；
+  - `RUNNING`：`teleop/actions` 在 `timeout_ms`（默认 300ms）内新鲜 → 执行遥操；遥操过期 → 回退 `inference/actions`（不改变会话状态）；两路都过期 → 停止并保持；
+  - `PAUSED`：两路都不执行（保持位姿），避免"暂停遥操但策略继续动"。
+  仲裁只在来源之间选择，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
 - **同构臂位姿预对齐**：遥操开始前，操作台读取当前位姿（`inference/observations` 的 `end_effector_pose`/关节位姿），驱动主臂运动到该位姿；对齐完成（误差 < 阈值）前操作台不下发 `teleop/actions`。对齐由操作台侧流程完成，客户端无需新状态机。
 - **VR 相对位姿遥操**：VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effector_pose` 对齐；之后按 VR 相对位姿增量（平移+旋转）叠加到参考位姿生成目标末端位姿。首帧对齐与增量映射在操作台/VR 侧实现。
 - **遥操观测发布**：客户端在控制循环的每个 `publish_hz` 节拍组装 Observations，发布到 `teleop/observations`。**格式与内容与 `inference/observations` 一致（同一 `Observations` 消息）**，区别仅在话题、频率（`publish_hz` vs 0.5Hz）与流转范围（仅本地、不上云）。图像不在此话题承载上云。
 - **图像推拉流**：相机画面由客户端推到流媒体服务（复用现有视频通道/三方流媒体，本版只约定对接方式），云端/远程操作台拉流观看；`teleop/observations` 保持轻量（非图像字段），仅本地流转。
 - **本地/远程统一**：操作台无论本地进程还是远端节点，都向 `teleop/actions` 发布；`teleop/observations` 的消费者与录制器在本地。客户端无模式分支。
-- **接管**：发布权交接——操作台开始/停止发布 `teleop/actions`；客户端仅按时间新鲜度仲裁。权限由 Zenoh ACL 控制。
+- **接管与交还（发布权交接 + 会话门控）**：接管 = 操作台发 `teleop/start` 进入 RUNNING 并开始发布 `teleop/actions`，同时策略停止下发；交还 = 操作台停发遥操或发 `finish`/`quit`。客户端按会话状态 + 动作新鲜度决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）；即"发布权交接"是上层编排语义，客户端只消费结果。
 - **采集**：本地录制器订阅 `teleop/actions` + `teleop/observations`，原样落盘（R2CR v1，按 topic 分文件），按大小/时长轮转；可选 `meta.json` 记设备树快照与配置哈希。
 - **回放**：按录制文件与 topic 回放；playback 设备类型注入设备树。
 
@@ -216,7 +222,7 @@ message TeleopControl {
 ```
 
 - **发布者**：操作台/云端控制台均可发布（权限由 Zenoh ACL 控制）；本地操作台"开始采集"按钮即发 `teleop/start`。
-- **超时兜底**：RUNNING 态下 `teleop/actions` 持续超时（如 5s 无消息）不改变会话状态（仍是遥操接管语义，回退策略由仲裁规则处理），仅 PAUSED/IDLE 才真正阻断遥操执行。
+- **超时兜底**：`RUNNING` 态下 `teleop/actions` 持续过期（默认超过 `timeout_ms`）→ 按 3.3.1 回退策略动作，会话状态不变（仍 RUNNING，操作台恢复发布即重新执行遥操）；`PAUSED`/`IDLE`/`FINISHING` 则直接阻断遥操执行。会话整体无动作时停止并保持。
 
 #### 3.3.3 接口设计
 
@@ -283,8 +289,8 @@ recordings/
 
 | 异常 | 行为 |
 |------|------|
-| `teleop/actions` 超时（默认 300ms） | 回退 `inference/actions`；若策略也超时 → 停止并保持 |
-| 同构臂对齐未完成即收到动作 | 操作台不下发（对齐门禁在操作台侧）；客户端仍按新鲜度仲裁 |
+| `teleop/actions` 超时（默认 300ms） | RUNNING 下回退 `inference/actions`；若策略也超时 → 停止并保持；PAUSED/IDLE/FINISHING 下直接丢弃遥操动作 |
+| 同构臂对齐未完成即收到动作 | 操作台不下发（对齐门禁在操作台侧）；客户端按会话门控 + 新鲜度执行 |
 | 操作台与策略同时发布 | 以遥操新鲜度为准（遥操优先）；策略动作不丢弃但暂不执行 |
 | `teleop/observations` 发布失败 | 仅影响本地反馈/录制，不影响控制执行；记录告警 |
 | 推拉流中断 | 只影响远程观看，不影响遥操控制与本地录制 |
@@ -382,3 +388,5 @@ recordings/
 4. **迁移路径**：PR #2 的 r2c 内 `teleop/` 子包即操作端雏形，评审通过后按 B 平移到新包（模块整体移动，无重写）；机器人端增量（生命周期+门控）在 r2c 内实现。
 
 **待评审决策**：是否接受 B；若接受，新包命名 `hw-cloudrobo-teleop` 与迁移时点（本特性实现前迁移，或先在 r2c 内完成功能、下个版本拆包）。
+
+
