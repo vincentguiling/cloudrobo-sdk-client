@@ -94,7 +94,7 @@ opencv 相机 2
 | 设备（device） | 设备树的功能单元（本体、末端、相机、历史…）；`type` 经 `r2c_sdk.devices` entry-point 解析为具体实现；可绑定传输上下文（`transport`）或自带采集 |
 | 设备类型（device type） | entry-point 注册的设备实现名（如 `arm`、`gripper`、`opencv_camera`、`history`）；**历史/滤波/变换等都是设备类型**，不是特殊节点 |
 | 设备复用 | 同类设备用 YAML 标准锚点/别名/合并键（`&x`/`*x`/`<<:`）复用与微调；**不引入跨文件 include（非 YAML 标准）** |
-| 环形缓冲（ring buffer） | 设备通用组件：按 `(设备, 通道)` 维度缓存最近 `ceil(window_s × sample_hz)` 个样本，溢出覆盖最旧 |
+| 环形缓冲（ring buffer） | 设备通用组件：按 `(设备, 通道)` 维度缓存最近 `history_window` 个样本（溢出覆盖最旧） |
 | 样本（sample） | 一个时刻的设备读数：`timestamp` + 数据载荷（复用 `ExtensionValue` 自描述结构） |
 | 窗口批（window batch） | 历史设备注入 `Observations.extensions` 的扩展字段（键 `<设备名>.window`）：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
 
@@ -148,7 +148,7 @@ DeviceManager（每 R2CClient 一个）
   ├── device: camera2 (type: opencv_camera, 自带采集) ──30Hz──► RingBuffer(camera2)
   ├── device: left_ft (type: force_torque)          ──30Hz──► RingBuffer(left_ft)
   └── node: left_ft_hist (capability: history) ── devices: [left_ft]
-        └─ 每上行周期: 截窗 [now-window_s, now) → 注入 extensions["left_ft_hist.window"]
+        └─ 每上行周期: 取最近 history_window 个样本 → 注入 extensions["left_ft_hist.window"]
   ▼
 Zenoh: {project_id}/{device_id}/inference/observations（观测唯一入口）
   │  常规字段 + extensions（含设备输出）一并上行
@@ -171,7 +171,7 @@ sequenceDiagram
     end
     loop 上行节拍 (= 模型调用频率)
         P->>S: 各设备 get_observation 组装常规字段
-        H->>R: snapshot [now-window_s, now)
+        H->>R: snapshot（最近 history_window 个样本）
         R-->>H: 样本 + health
         H->>P: extensions["left_ft_hist.window"] 注入
         P->>Z: publish Observations
@@ -207,7 +207,7 @@ sequenceDiagram
 |------|---------------------|------|
 | **传输节点（transport，可被别的节点挂靠）** | ① 上下文建立/释放：`connect()`/`disconnect()`（如创建 ROS 节点、打开串口总线）；② 句柄工厂：`create_subscription(ChannelSpec)` / `create_publisher(ChannelSpec)`——子设备声明什么 topic 就建什么句柄；③ `context_info()`（节点名/domain 等诊断信息）；④ QoS 默认值（子设备可覆盖）；⑤ 生命周期状态与恢复（基类默认实现） | **只提供"连接能力"，不提供业务语义**——它不知道挂的是机械臂还是夹爪；`type` 走现有 `r2c_sdk.adapters` 注册表（`ros2` 即是一个传输节点实现） |
 | **输入节点（input，可被历史/滤波引用）** | ① 数据输出：按声明 `sample_hz` 产出**带时间戳的样本**（进入 `Observations` 字段或 `extensions`）；② 通道声明：`channels`（它占用的 topic/键），供录制与 topic 冲突检测；③ 生命周期：ACTIVE/DEGRADED 状态与自动恢复（设备基类默认实现）；④ 元数据：`describe_devices()` 或由配置 `name/type/channels` 声明 | **提供"数据 + 健康"**：任何能持续产出带时间戳读数的设备（力传感器、关节、相机、历史设备）都可作为 `input`；`history` 设备本身也是合法的 `input`（可级联，需无环） |
-| **能力节点（history / 后续 filter、tf）** | ① `devices` 子设备（数据源，必须是输入节点）；② 能力参数（如 `window_s`）；③ 输出写到约定位置（history → `extensions["<name>.window"]`） | 由 SDK 通用实现承载（环形缓冲/截窗），能力设备**零驱动代码**；详见 3.3.3（1）–（4） |
+| **能力节点（history / 后续 filter、tf）** | ① `devices` 子设备（数据源，必须是输入节点）；② 能力参数（如 `history_window`，按样本数表达）；③ 输出写到约定位置（history → `extensions["<name>.window"]`） | 由 SDK 通用实现承载（环形缓冲/截窗），能力设备**零驱动代码**；详见 3.3.3（1）–（4） |
 
 **单设备（存量，零改动）**：
 
@@ -276,7 +276,7 @@ hardware:                                  # 从单块扩展为列表；树的�
     config: {index_or_path: "/dev/video2"}
   - name: left_ft_hist                     # 能力节点：也是列表中普通一项，但其 devices 是数据源
     type: history                          # r2c_sdk.devices entry-point（SDK 通用实现，零驱动代码）
-    config: {window_s: 2.0}                # 窗口随观测上行，无独立发布频率
+    config: {history_window: 60}           # 窗口样本数；随观测上行，无独立发布频率
     devices:                               # ← 能力节点把数据源作为自己的子设备
       - name: left_ft                      # 力传感器（input 节点）
         type: force_torque
@@ -334,7 +334,7 @@ robot_config
 | 能力节点的子设备 | history 的 `devices` 必须是 input 节点（产出样本）；挂传输节点等非 input 节点 → 加载失败 |
 | `channels` | 设备自声明通道；同一 transport 内 topic 冲突（同向重复）→ 加载失败报冲突双方 |
 | 无环 | 能力节点可级联（history 作为另一能力节点的 input 节点时），引用链需无环 |
-| 容量上限 | `window_s × sample_hz ≤ 4096`，超出拒绝加载——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"` 静默，代码调研偏差 #6）。**用途：环形缓冲的内存护栏**——历史节点的缓冲常驻端侧内存，样本数 = 窗口秒数 × 采样率（2s×30Hz=60 样本 ≈ 3.4KB）；若误配 `window_s: 3600, sample_hz: 1000`（360 万样本，数百 MB）会在启动期被拒绝，而不是运行期内存溢出 |
+
 | 映射归属 | 缺省全局（存量语义）；列表项内可写 `device_to_r2c`/`r2c_to_device` 覆盖该设备（可选增量） |
 
 **映射归属示例**（全局缺省 + 按设备覆盖）：
@@ -375,7 +375,7 @@ hardware:
     config: {...}
   - name: left_ft_hist                 # 能力节点无需映射（输出走 extensions）
     type: history
-    config: {window_s: 2.0}
+    config: {history_window: 60}
     devices:
       - name: left_ft
         type: force_torque
@@ -430,8 +430,8 @@ hardware:
 | 提供（provides） | `extensions["<name>.window"]`：窗口批（当前值快照 + 窗口内样本 + 起止时间戳 + health） |
 | 需要（requires） | `devices` 子设备必须是 input 节点（产出带时间戳样本）；可级联（history 作为另一 history 的子设备，需无环） |
 | 作为父节点 | 数据源（如 `left_ft`）作为它的 `devices` 子设备挂在它下面（**不再使用 `input` 引用字段**） |
-| 参数 | `window_s`（窗口秒数，默认 2.0） |
-| **校验：容量上限** | `window_s × sample_hz ≤ 4096`，超出拒绝加载。**用途：环形缓冲的内存护栏**——窗口缓冲常驻端侧内存，样本数 = 窗口秒数 × 采样率（2s×30Hz=60 样本 ≈ 3.4KB）；若误配 `window_s: 3600, sample_hz: 1000`（360 万样本，数百 MB）会在启动期被拒绝，而不是运行期内存溢出 |
+| 参数 | `history_window`（窗口样本数，默认 60；即 30Hz 下约 2 秒） |
+| 校验 | `history_window` 为正整数；pydantic 显式校验需新增（现状 `extra="allow"` 静默，代码调研偏差 #6） |
 | 输出 | 见 3.3.4 的 `ObservationWindow` proto 与 extensions 键约定 |
 | 生命周期 | 随子设备：全部子设备 ACTIVE 才 ACTIVE；任一子设备 DEGRADED → 本节点 DEGRADED（窗口批照发，health 标记） |
 
@@ -524,6 +524,7 @@ extensions["<设备名>.window"] = ExtensionValue{
 | D7 | 设备输出承载方式 | **已定案**：不新起 topic，观测唯一入口，extensions 承载，云端不感知端侧实现 |
 | D8 | 配置引用机制 | **已定案（2026-11-05 三次）**：兼容优先——不新增顶层段，`hardware` 单块→列表（项可嵌套 devices 体现树层级）；复用用 YAML 原生锚点/合并键；**不引入跨文件 include**（配置为纯标准 YAML） |
 | D9 | 传输上下文与设备的职责边界 | **已定案（2026-11-05）**：上下文只提供节点/连接与建订阅/发布句柄（`create_subscription`/`create_publisher`），**topic 与消息类型由设备配置声明**；适配器不感知设备语义 |
+
 
 
 
