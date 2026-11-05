@@ -183,7 +183,7 @@ sequenceDiagram
 
 #### 3.3.1 功能原理
 
-- **装载**：`DeviceManager` 读取 `adapters`（实例化传输上下文：节点/会话/连接，复用现有 AdapterRegistry）与 `devices`（按 `type` 从 `r2c_sdk.devices` 解析实现并构造，注入其引用的传输上下文）；**设备实现按自身配置声明的通道创建订阅/发布**（传输上下文只提供建句柄能力）；相机等自带采集的设备不引用传输上下文。
+- **装载**：`DeviceManager` 读取 `hardware` 列表——传输角色项实例化传输上下文（复用现有 AdapterRegistry），设备项按 `type` 从 `r2c_sdk.devices` 解析实现并构造，注入其引用的传输上下文；**设备实现按自身配置声明的通道创建订阅/发布**（传输上下文只提供建句柄能力）；相机等自带采集的设备不引用传输上下文。
 - **双节拍**：采样节拍按设备 `sample_hz` 拉取数据写环形缓冲；上行节拍按模型调用频率组装 Observations（常规字段 + 各设备输出注入的 extensions），经现有会话发布。现状 sync_client 的单节拍循环拆分为两节拍。
 - **生命周期**：借鉴 ros2_control 组件状态机——设备 `UNCONFIGURED → INACTIVE → ACTIVE`；`input` 引用设备（如历史设备依赖力传感器）在其输入设备 ACTIVE 后激活；单设备 ERROR 仅影响依赖它的设备（转 DEGRADED），其他设备不受影响。
 - **故障隔离**：单设备离线不拖垮整机；断线资源"标记不可用而非消失"（对齐 Viam 语义），恢复后自动回归。
