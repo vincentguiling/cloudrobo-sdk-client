@@ -1,5 +1,7 @@
 # 遥操与数据采集（Teleop）
 
+> 本文件是使用指南（怎么跑、怎么配）；特性的设计真源（目标、架构决策、安全设计、开放问题）见 [docs/r2c-teleop-data-collection-design.md](../../docs/r2c-teleop-data-collection-design.md)（仓库根 docs/）。
+
 基于 R2C 数据面的遥操操作端：把**主从臂（leader 臂）**或 **VR 设备**的输入映射为
 `Actions` 下发给机器人，同时把（最新观测, 已发布动作）成对录制为遥操数据集文件。
 现场遥操（局域网）与远程遥操（互联网）共用同一套操作端，仅连接方式不同。
