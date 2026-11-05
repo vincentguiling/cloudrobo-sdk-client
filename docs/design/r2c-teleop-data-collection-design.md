@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v0.5，待评审**。本版按反馈：①`teleop/observations` **只在本地流转、不上云**（由本地操作台端录制保存），数据格式与内容与 `inference/observations` 一致；**图像通过推拉流上云**；②遥操输入两类：**同构臂遥操**——操作前先把同构臂位姿对齐到当前位姿（读 `inference/observations`）；**VR 遥操**——相对位姿遥操，首帧位姿与 `inference/observations` 的 `end_effector_pose` 对齐，后续按 VR 相对位姿增量；③`teleop/actions` 下发频率 **20Hz**。前版：teleop 动作/观测独立话题、采集录 teleop 两话题、客户端不区分本地/远程。只出设计，不含实现。
+> 状态：**v0.6，待评审**。v0.5：①`teleop/observations` **只在本地流转、不上云**（由本地操作台端录制保存），数据格式与内容与 `inference/observations` 一致；**图像通过推拉流上云**；②遥操输入两类：**同构臂遥操**（操作前位姿对齐到当前位姿，读 `inference/observations`）；**VR 遥操**（相对位姿，首帧对齐 `end_effector_pose`）；③`teleop/actions` 下发频率 **20Hz**。v0.6 增补（2026-11-05 反馈）：**新增 `teleop/start|pause|resume|finish|quit` 五个会话生命周期话题**；**非数采状态下客户端不接收&执行 `teleop/actions`**；**给出 client 改进方案**（r2c 增量 vs 独立 teleop 包，参考 metaquest-dist 设计资料，见 §11）。更早版本：teleop 动作/观测独立话题、采集录 teleop 两话题、客户端不区分本地/远程。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -14,6 +14,7 @@
 3. **本地/远程不区分**：本地操作台与远程操作员都发布到同一个 `teleop/actions`，客户端无本地/远程分支。
 4. **采集=本地端录制两个话题**：`teleop/actions` 与 `teleop/observations`（本地录制器）。
 5. **遥操输入两类**：同构臂——先对齐位姿再跟随；VR——相对位姿模式（首帧对齐 `end_effector_pose`）。
+6. **会话生命周期门控**：`teleop/start|pause|resume|finish|quit` 五个生命周期话题控制遥操会话状态；**仅在数采进行中（RUNNING）客户端才接收&执行 `teleop/actions`**，其余状态一律忽略（防止无人值守时遥操动作驱动机器人）。
 
 **目标**：
 - 新增 `teleop/actions`（20Hz，客户端订阅、执行）与 `teleop/observations`（客户端按 `publish_hz` 发布，仅本地流转）；
@@ -184,14 +185,36 @@ sequenceDiagram
 - **采集**：本地录制器订阅 `teleop/actions` + `teleop/observations`，原样落盘（R2CR v1，按 topic 分文件），按大小/时长轮转；可选 `meta.json` 记设备树快照与配置哈希。
 - **回放**：按录制文件与 topic 回放；playback 设备类型注入设备树。
 
-#### 3.3.2 接口设计
+#### 3.3.2 会话生命周期与数采门控
+
+客户端维护会话状态机（事件源为五个生命周期话题 + 内置超时）：
+
+```text
+IDLE --start--> RUNNING --pause--> PAUSED --resume--> RUNNING
+RUNNING --finish--> FINISHING（录制收尾落盘）--> IDLE
+RUNNING/PAUSED --quit--> IDLE（丢弃当前会话未落盘数据）
+任意态 --quit--> IDLE；start 仅在 IDLE 有效，重复 start 忽略并告警
+```
+
+- **门控规则（核心安全语义）**：仅 **RUNNING** 态下客户端接收&执行 `teleop/actions`；IDLE/PAUSED/FINISHING 态收到的遥操动作一律丢弃（计数并限频告警）。PAUSED 时策略动作也不执行（整体保持），避免"暂停遥操但策略继续动"的意外。
+- **与采集的耦合**：`start` 同时启动本地录制器（两话题）；`pause/resume` 在录制文件上打分段标记；`finish` 收尾落盘并生成 `meta.json`；`quit` 丢弃未完成数据。数采与遥操执行共用同一状态机，天然满足"不在数采状态下不接收&执行 teleop/actions"。
+- **消息形态**：生命周期话题 payload 为轻量事件帧（`{timestamp, session_id, operator}` JSON 或复用 `CommandMessage` proto），客户端不校验内容语义，收到即按话题名转移状态；幂等：重复/乱序事件按状态机合法性检查忽略。
+- **发布者**：操作台/云端控制台均可发布（权限由 Zenoh ACL 控制）；本地操作台"开始采集"按钮即发 `teleop/start`。
+- **超时兜底**：RUNNING 态下 `teleop/actions` 持续超时（如 5s 无消息）不改变会话状态（仍是遥操接管语义，回退策略由仲裁规则处理），仅 PAUSED/IDLE 才真正阻断遥操执行。
+
+#### 3.3.3 接口设计
 
 **话题清单**：
 
 | 话题 | 方向 | 频率 | 说明 |
 |------|------|------|------|
 | `{p}/{d}/inference/actions` | 策略 → 客户端 | 策略驱动 | 现有；策略动作 |
-| `{p}/{d}/teleop/actions` | 操作台 → 客户端 | **20Hz** | **新增**；本地/远程遥操动作 |
+| `{p}/{d}/teleop/actions` | 操作台 → 客户端 | **20Hz** | **新增**；本地/远程遥操动作（**仅 RUNNING 态被执行**，见 §3.3.2） |
+| `{p}/{d}/teleop/start` | 控制端 → 客户端 | 事件 | **新增**；开始遥操会话（进入数采/RUNNING，录制启动） |
+| `{p}/{d}/teleop/pause` | 控制端 → 客户端 | 事件 | **新增**；暂停（不执行 teleop/actions，录制分段） |
+| `{p}/{d}/teleop/resume` | 控制端 → 客户端 | 事件 | **新增**；恢复（回到 RUNNING） |
+| `{p}/{d}/teleop/finish` | 控制端 → 客户端 | 事件 | **新增**；完成本次采集会话（录制收尾落盘，回 IDLE，策略恢复） |
+| `{p}/{d}/teleop/quit` | 控制端 → 客户端 | 事件 | **新增**；中止退出（丢弃当前会话未落盘数据，回 IDLE） |
 | `{p}/{d}/inference/observations` | 客户端 → 云模型 | 0.5Hz（D3） | 现有；推理观测（含当前位姿，供预对齐/VR 首帧读取） |
 | `{p}/{d}/teleop/observations` | 客户端 → **本地**操作台 | `publish_hz` | **新增**；仅本地流转不上云，格式与 inference/observations 一致 |
 | 推拉流通道 | 客户端 → 流媒体 → 云端/远程 | 视频帧率 | **图像上云**（teleop/observations 不承载图像上云） |
@@ -226,7 +249,7 @@ collection:                                          # 本地操作台侧录制�
 
 **界面设计**：无图形界面；录制状态用 CLI 与日志。
 
-#### 3.3.3 数据结构设计
+#### 3.3.4 数据结构设计
 
 **录制目录**：
 
@@ -281,6 +304,7 @@ recordings/
 |------|------|
 | 单测 | 来源仲裁（遥操优先/超时回退/双超时停）、录制轮转与命名、回放解析、meta 生成 |
 | 集成（仲裁） | 策略与遥操交替发布：遥操新鲜时执行遥操、停止后回退策略、双停则停止 |
+| 集成（生命周期门控） | 五话题驱动状态机：IDLE 下发 teleop/actions 被丢弃不执行；start 后执行；pause 停止执行且策略保持；resume 恢复；finish 落盘后回 IDLE 再次阻断；quit 丢弃未落盘数据；非法转移（IDLE 收 resume）忽略并告警 |
 | 集成（同构臂对齐） | 模拟主臂位姿 ≠ 当前位姿：对齐完成前操作台不下发；对齐后跟随 |
 | 集成（VR 相对位姿） | 首帧对齐 end_effector_pose 后，增量映射正确、参考系不漂移 |
 | 集成（遥操观测） | 校验 `teleop/observations` 以 `publish_hz` 发布（±10%）、仅本地订阅可见、格式与 `inference/observations` 一致 |
@@ -311,3 +335,33 @@ recordings/
 | U7 | 动作来源仲裁规则 | 建议：遥操新鲜优先（`timeout_ms` 默认 300），超时回退策略，双超时停止；待评审 |
 | U8 | 录制粒度与轮转 | 建议：本地端按 topic 原样录制（R2CR v1），大小/时长轮转；待评审 |
 | U9 | 配置项范围 | 建议：`teleop.actions_topic/observations_topic/actions_rate_hz/timeout_ms` + `collection.record/output_dir`；待评审 |
+| U10 | 会话生命周期话题与门控 | **已定案（2026-11-05 反馈）**：新增 `teleop/start|pause|resume|finish|quit` 五话题；非数采（非 RUNNING）态不接收&执行 `teleop/actions`；状态机与采集耦合细节（§3.3.2）待评审 |
+| U11 | client 改进方案（r2c 增量 vs 独立 teleop 包） | 建议：机器人端小增量留在 r2c + 新增独立 `hw-cloudrobo-teleop` 包承载操作端运行时与协议契约（§11）；待评审 |
+
+## 11. client 改进方案：r2c 增量开发 vs 独立 teleop 包
+
+参考材料：`docs/metaquest-dist.tar.gz`（Meta Quest 遥操客户端开发资料库）。其与本特性的相关结论：
+
+- **操作端形态**：Quest 上的 Unity + OpenXR 应用（C#），经 Zenoh C# 绑定发布控制流（protobuf `Envelope/InputSample/RobotCommand`，60–120Hz，BEST_EFFORT）；局域网 peer 直连、远程经 Zenoh Router 路由——与我们 §3.2/§4.3 的拓扑结论一致；
+- **协议契约可对齐**：其 `ControlEvent`（E_STOP/PAUSE/RESUME/RESET/RECORD_TOGGLE）与本设计 §3.3.2 生命周期话题、`teleop/{session}/command` 与 `teleop/actions`、`RobotState` 反馈与 `teleop/observations`、心跳与超时保护——概念一一对应，差异主要在消息 schema（其自研 `teleop.v1` Envelope vs 我们的 r2c `Actions`/`Observations`/`CommandMessage`）；
+- **分层边界**：其六层架构中平台层/输入采集层（OpenXR 采集器）强平台相关且在 C# 侧；输入抽象、映射、传输、机器人抽象层是平台无关核心。落到我们的分工：**C# 侧自持平台层+采集层，Python 侧自持映射后的动作消费与机器人执行**，中间只共享 Zenoh key 约定与 protobuf schema。
+
+**方案对比**：
+
+| 维度 | A. 全部在 r2c 包内增量 | B. 机器人端留 r2c + 新增 `hw-cloudrobo-teleop` 包（建议） |
+|------|------------------------|--------------------------------------------|
+| 机器人端改动 | 门控状态机 + 仲裁 + 生命周期订阅（sync_client 小改） | 相同（这部分本来就是 client 执行路径，天然属于 r2c） |
+| 操作端代码归属 | r2c 包内 `teleop/` 子包（PR #2 现状） | 迁入新包；r2c 回归"机器人端数据面 SDK"单一职责 |
+| 部署面 | 操作台装 r2c 全家桶（含 16+ 机器人适配器依赖声明） | 操作台只装 `hw-cloudrobo-teleop`（zenoh+protobuf+numpy，轻量） |
+| VR/C# 协作 | schema 埋在 r2c 包内 | schema 契约随 teleop 包发布；.proto 本身语言无关，Unity 侧用同一 proto 编译 C# 生成物，无需 Python 运行时 |
+| 版本节奏 | 随 r2c 发版（机器人端节奏） | 操作端独立迭代（VR 对接变化频繁） |
+| monorepo 惯例 | 单包持续膨胀 | 符合既有 `packages/*` 按域分包惯例（ingestion/r2c 各自独立先例） |
+
+**建议（B）**：
+
+1. **r2c 机器人端增量（小，留在 r2c）**：生命周期五话题订阅与状态机、`teleop/actions` 门控仲裁、`teleop/observations` 按 `publish_hz` 本地发布——都在 client 执行路径上，属 r2c 职责；
+2. **新增 `packages/hw-cloudrobo-teleop`**：操作端运行时——输入源抽象（主臂/VR bridge/mock）、映射（同构臂透传、VR 相对位姿）、20Hz 发布、生命周期会话客户端、本地录制器（订阅两话题 R2CR 落盘）；依赖 `hw-cloudrobo-r2c[client]`（复用 session/序列化/R2CR）；
+3. **协议契约共享**：以 r2c `.proto`（proto3）为唯一 schema 源，C# 生成物由 Unity 工程自行编译或由 teleop 包以构建产物分发；metaquest `teleop.v1` 不整体引入，仅将其 `ControlEvent`/`SafetyMeta`/心跳语义映射到我们的生命周期话题与超时保护（避免双 schema 并存）；
+4. **迁移路径**：PR #2 的 r2c 内 `teleop/` 子包即操作端雏形，评审通过后按 B 平移到新包（模块整体移动，无重写）；机器人端增量（生命周期+门控）在 r2c 内实现。
+
+**待评审决策**：是否接受 B；若接受，新包命名 `hw-cloudrobo-teleop` 与迁移时点（本特性实现前迁移，或先在 r2c 内完成功能、下个版本拆包）。
