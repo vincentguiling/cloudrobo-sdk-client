@@ -1,4 +1,4 @@
-# CLI 命令参考
+﻿# CLI 命令参考
 
 cloudrobo-r2c 通过 `cloudrobo r2c` 命令组提供以下子命令。
 
@@ -63,7 +63,7 @@ cloudrobo r2c teleop [OPTIONS]
 | `--no-record` | 关闭 | 强制关闭录制 |
 | `--log-level` / `--log-file` | INFO / - | 日志 |
 
-输入源（`lerobot_leader` 主从臂 / `vr_udp` VR / `mock_joints` 联调）、配置项、
+输入源（`lerobot_leader` 主从臂 / `mock_joints` 联调；VR 源为设计阶段内容）、配置项、
 安全策略与录制格式详见 [遥操与数据采集](teleop.md)。
 
 ## 配置能力

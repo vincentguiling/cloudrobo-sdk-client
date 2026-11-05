@@ -1,11 +1,11 @@
-"""CloudRobo R2C 遥操（Teleop）与数据采集操作端。
+﻿"""CloudRobo R2C 遥操（Teleop）与数据采集操作端。
 
 组成：
 
 - :class:`TeleopOperator`：读输入源 → 映射为 Actions → 发布到机器人，
   并把（最新观测, 已发布动作）成对录制（遥操数据采集）。
 - :class:`TeleopSource` / ``SOURCE_REGISTRY``：输入源抽象与注册表
-  （内置 ``lerobot_leader`` 主从臂、``vr_udp`` VR、``mock_joints`` 联调）。
+  （内置 ``lerobot_leader`` 主从臂、``mock_joints`` 联调）。
 - :class:`TeleopSessionRecorder`：R2CR 格式会话录制。
 
 入口：``cloudrobo r2c teleop --teleop-config <yaml> ...``，详见

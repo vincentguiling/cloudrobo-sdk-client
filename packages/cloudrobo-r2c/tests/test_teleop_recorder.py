@@ -1,4 +1,4 @@
-"""TeleopSessionRecorder 与遥操配置加载测试。"""
+﻿"""TeleopSessionRecorder 与遥操配置加载测试。"""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from cloudrobo_r2c.teleop.recording import TeleopSessionRecorder
 
 def test_recorder_roundtrip_with_bytes_and_nested_structures(tmp_path):
     path = str(tmp_path / "teleop.r2cr")
-    recorder = TeleopSessionRecorder(path, source_name="vr_udp")
+    recorder = TeleopSessionRecorder(path, source_name="lerobot_leader")
     observation = {
         "timestamp": 12345,
         "task": "pick place",
@@ -38,7 +38,7 @@ def test_recorder_roundtrip_with_bytes_and_nested_structures(tmp_path):
     assert len(frames) == 2
     first = frames[0]
     assert first["timestamp_ms"] > 0
-    assert first["source_name"] == "vr_udp"
+    assert first["source_name"] == "lerobot_leader"
     assert first["observation"]["images"]["color"]["front"] == b"\xff\xd8front-jpeg"
     assert first["observation"]["joint_states"]["names"] == ["joint_1", "joint_2"]
     assert first["action"]["end_effector_poses"]["left_ee"][0][0] == pytest.approx(0.1)
@@ -115,7 +115,8 @@ def test_shipped_operator_configs_are_valid():
         "cloudrobo_r2c",
         "config",
     )
-    for name in ("teleop_so101_leader.yaml", "teleop_vr_udp.yaml"):
+    for name in ("teleop_so101_leader.yaml",):
         cfg = load_teleop_config(os.path.join(config_dir, name))
         operator_config = OperatorConfig.from_cfg(cfg)
         operator_config.validate()
+

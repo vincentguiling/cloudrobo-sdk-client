@@ -1,4 +1,4 @@
-# cloudrobo-r2c
+﻿# cloudrobo-r2c
 
 CloudRobo Robot-to-Cloud (R2C) 数据面 SDK，基于 Zenoh pub/sub 传输、Protobuf 序列化、H264 / jpeg / webp / png 图像编码。
 
@@ -13,7 +13,7 @@ R2C SDK 提供机器人端与云端之间的实时数据通道：
 - **图像编码**：H264（传输）/ jpeg / webp / png（扩展字段）
 - **相机推流**：LiveKit WebRTC（可选，`camera` extra）
 - **数据面转发**：forwarder 将本地主链路数据透传到云端会话
-- **遥操与数据采集**：主从臂（LeRobot 主臂）/ VR 输入源 → Actions，观测+动作成对录制（`teleop/`）
+- **遥操与数据采集**：主从臂（LeRobot 主臂）输入源 → Actions，观测+动作成对录制（`teleop/`；VR 输入与远程遥操为设计阶段内容）
 
 ## 安装
 

@@ -1,8 +1,8 @@
-# R2C 遥操与数据采集特性设计
+﻿# R2C 遥操与数据采集特性设计
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v0.8，待评审**。v0.7：消除"生命周期门控"与"发布权交接"表述矛盾——客户端感知会话状态并据此门控，不判断接管权限；执行规则为会话状态 + 新鲜度两层判定。v0.8 增补（2026-11-05 反馈）：**新增 `teleop/observations` 录制 → LeRobot v2.1/v3 格式转换设计**（transformer 自定义转换管道；v3 从 v2.1 两段式转换，见 §3.3.2）；**§3.3 按功能重排**（3.3.1 遥操功能实现、3.3.2 数据采集与格式转换、3.3.3 接口设计、3.3.4 数据结构设计）。更早版本：teleop 动作/观测独立话题（20Hz）、观测仅本地不上云（格式同 inference）、图像推拉流上云、同构臂对位/VR 相对位姿、生命周期五话题门控、客户端不区分本地/远程。只出设计，不含实现。
+> 状态：**v0.8，待评审**。v0.7：消除"生命周期门控"与"发布权交接"表述矛盾——客户端感知会话状态并据此门控，不判断接管权限；执行规则为会话状态 + 新鲜度两层判定。v0.8 增补（2026-11-05 反馈）：**新增 `teleop/observations` 录制 → LeRobot v2.1/v3 格式转换设计**（transformer 自定义转换管道；v3 从 v2.1 两段式转换，见 §3.3.2）；**§3.3 按功能重排**（3.3.1 遥操功能实现、3.3.2 数据采集与格式转换、3.3.3 接口设计、3.3.4 数据结构设计）。更早版本：teleop 动作/观测独立话题（20Hz）、观测仅本地不上云（格式同 inference）、图像推拉流上云、同构臂对位/VR 相对位姿、生命周期五话题门控、客户端不区分本地/远程。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**（vr_udp 源/teleop_vr_udp 配置/VR mock 发送端），本文档按保留实现对齐：已实现 = 主从臂（lerobot_leader）+ mock_joints 源、局域网现场遥操、录制；VR/远程遥操相关章节为设计阶段内容。只出设计，不含实现。
 
 ## 1. 特性概述
 

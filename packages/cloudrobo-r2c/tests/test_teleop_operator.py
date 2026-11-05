@@ -1,4 +1,4 @@
-"""TeleopOperator 单元测试（FakeSession + 脚本化输入源）。"""
+﻿"""TeleopOperator 单元测试（FakeSession + 脚本化输入源）。"""
 
 from __future__ import annotations
 
@@ -246,7 +246,7 @@ def test_stale_source_skips():
 def _ee_config() -> OperatorConfig:
     return OperatorConfig.from_cfg(
         {
-            "source": {"type": "vr_udp"},
+            "source": {"type": "mock_joints"},
             "action": {
                 "mode": "end_effector_pose",
                 "action_hz": 30.0,
@@ -322,7 +322,7 @@ def test_joint_mode_requires_joint_map():
 def test_ee_mode_requires_ee_pose_map():
     with pytest.raises(ValueError, match="ee_pose_map is required"):
         OperatorConfig.from_cfg(
-            {"source": {"type": "vr_udp"}, "action": {"mode": "end_effector_pose"}}
+            {"source": {"type": "mock_joints"}, "action": {"mode": "end_effector_pose"}}
         )
 
 

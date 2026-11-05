@@ -1,4 +1,4 @@
-"""遥操（Teleop）核心抽象：输入源、目标值与源注册表。
+﻿"""遥操（Teleop）核心抽象：输入源、目标值与源注册表。
 
 遥操链路（operator 侧）::
 
@@ -52,7 +52,7 @@ class TeleopSource(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """源类型名（与注册表一致，如 ``vr_udp``）。"""
+        """源类型名（与注册表一致，如 ``lerobot_leader``）。"""
 
     @abstractmethod
     def start(self) -> None:
@@ -95,7 +95,7 @@ def create_source(source_cfg: Mapping[str, Any]) -> TeleopSource:
     配置形态::
 
         source:
-          type: vr_udp          # 注册表中的源类型
+          type: lerobot_leader  # 注册表中的源类型
           config: {...}         # 源自己的配置（缺省 {}）
     """
     if not isinstance(source_cfg, Mapping):

@@ -1,16 +1,15 @@
-# 遥操与数据采集（Teleop）
+﻿# 遥操与数据采集（Teleop）
 
 > 本文件是使用指南（怎么跑、怎么配）；特性的设计文档（目标、架构决策、安全设计、决策点，与设备树设计同模板）见 [docs/design/r2c-teleop-data-collection-design.md](../../docs/design/r2c-teleop-data-collection-design.md)（仓库根 docs/design/）。
 
-基于 R2C 数据面的遥操操作端：把**主从臂（leader 臂）**或 **VR 设备**的输入映射为
+基于 R2C 数据面的遥操操作端：把**主从臂（leader 臂）**的输入映射为
 `Actions` 下发给机器人，同时把（最新观测, 已发布动作）成对录制为遥操数据集文件。
-现场遥操（局域网）与远程遥操（互联网）共用同一套操作端，仅连接方式不同。
+现场遥操（局域网）已实现；远程遥操（互联网）与 VR 输入为设计阶段内容（见设计文档 v0.8），实现尚未包含。
 
 ```
 ┌────────────────────────── 操作端（本模块） ──────────────────────────┐
 │  TeleopSource                       TeleopOperator                  │
 │  ├─ lerobot_leader（主从臂）  ──►  读源 → 映射 → Actions ──► 发布    │
-│  ├─ vr_udp（VR 姿态流）             ▲                               │
 │  └─ mock_joints（联调）             │ 订阅 Observations（安全看门狗）│
 │                                     ▼                               │
 │                     TeleopSessionRecorder：(观测, 动作) 成对落盘      │
@@ -38,26 +37,16 @@ cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \
     --record teleop_session.r2cr
 ```
 
-### 2. VR 遥操（UDP 姿态流）
+### 2. VR 遥操（设计中，未实现）
 
-```bash
-# 无 VR 设备联调：先跑 mock 发送端
-python examples/vr_pose_mock_sender.py --port 9870
-
-# 操作端
-cloudrobo r2c teleop --teleop-config config/teleop_vr_udp.yaml \
-    --endpoints tcp/<机器人IP>:7447
-```
-
-VR 桥接程序（Vision Pro / Quest 等侧的 tracking 桥）按下方协议发送 UDP JSON
-数据报即可接入。
+VR 输入（`vr_udp` UDP 姿态流协议、相对位姿遥操）为设计阶段内容，见设计文档 v0.8 §3.3.1.4；实现尚未包含。
 
 ### 3. 操作端配置（`--teleop-config`）
 
 ```yaml
 teleop:
   source:                     # 输入源
-    type: lerobot_leader      # lerobot_leader | vr_udp | mock_joints
+    type: lerobot_leader      # lerobot_leader | mock_joints（VR 源为设计阶段内容）
     config:
       type: so101_leader
       port: /dev/ttyACM1
@@ -104,57 +93,16 @@ LeRobot teleoperator 主臂（`so101_leader`/`koch_leader` 等，与
 | `gripper_key` | 夹爪关节基名（默认 `gripper`） |
 | `gripper_range: [闭合值, 全开值]` | 设置后额外输出归一化开度 `TeleopTarget.gripper` |
 
-### vr_udp（VR）
-
-监听 UDP 端口接收 JSON 姿态流（每数据报一帧，字段均可选）：
-
-```json
-{
-  "ts": 1700000000000,
-  "left":  {"pos": [x,y,z], "quat": [x,y,z,w], "grip": 0.8, "pinch": 0.4},
-  "right": {"pos": [x,y,z], "quat": [x,y,z,w], "grip": 0.8, "pinch": 0.4},
-  "head":  {"pos": [x,y,z], "quat": [x,y,z,w]}
-}
-```
-
-约定：`pos` 单位米、右手系；`quat` 顺序由 `quat_order`（`xyzw` 默认 / `wxyz`）；
-`grip` 0~1（1=张开）；`pinch` 0~1（1=捏合），同时存在优先 `grip`。
-
-坐标变换按顺序应用：`scale` 缩放 → `workspace_offset` 平移 →
-`axis_remap` 轴重映射（机器人轴 ← 源轴+符号，如 `{x: "+y", y: "-x", z: "+z"}`；
-四元数按同一旋转矩阵同步变换）。无新数据超过 `stale_after_s` 判 stale。
-
-| 配置项 | 默认 | 说明 |
-|--------|------|------|
-| `listen_host` / `listen_port` | `0.0.0.0` / `9870` | UDP 监听 |
-| `hands` | `[left, right]` | 参与的手 |
-| `ee_name_map` | 手名即末端名 | 源键 → `end_effector_poses` 键 |
-| `scale` / `workspace_offset` | `1.0` / `[0,0,0]` | 工作区缩放与平移 |
-| `axis_remap` | 恒等 | 轴重映射（含四元数） |
-| `quat_order` | `xyzw` | 输入四元数顺序 |
-| `stale_after_s` | `0.5` | 数据超时判 stale |
-| `gripper.source` | `grip` | `grip` / `pinch`（取 1−x）/ `none` |
-| `gripper.hand` | 第一只手 | 取哪只手的捏合/开合值 |
-
 ### mock_joints（联调）
 
 无硬件正弦波关节目标（`joints`/`amplitude`/`base`/`frequency_hz`），用于
-不接主臂/VR 时验证操作端 → 机器人 → 观测回显的全链路。
+不接主臂时验证操作端 → 机器人 → 观测回显的全链路。
 
-## 现场遥操（局域网）与远程遥操（互联网）
+## 现场（局域网）与远程（互联网）
 
-数据面完全一致，差别只在 zenoh 接入与相机画面路径：
+数据面执行路径一致，差别只在 zenoh 接入与相机画面路径。**当前实现覆盖局域网现场遥操**（操作端 `--endpoints tcp/<机器人IP>:7447`，机器人端 `--endpoint-role listen`）；**远程遥操（互联网，经云端数据面 + LiveKit 推拉流画面）为设计阶段内容**，见设计文档 v0.8 §4.3，实现尚未包含。
 
-| | 现场遥操（局域网） | 远程遥操（互联网） |
-|---|---|---|
-| zenoh | 操作端直连机器人：`--endpoints tcp/<机器人IP>:7447`（机器人端 `--endpoint-role listen --endpoints tcp/0.0.0.0:7447`） | 两端均连云端：操作端 `--bundle <平台证书zip>`（或云端 zenoh 接入点的 client-config） |
-| 相机画面 | Observations 内嵌图像（jpeg/webp/png/h264）随数据面回传 | LiveKit WebRTC 推拉流：机器人端 `camera_streaming` 配置（`config/robot_so101_lerobot_config.yaml` 已含）经云端下发 `CAMERA_START` 后向 SFU 推流，操作者从云端控制台/客户端拉流观看；Observations 仍可走云端数据面 |
-| 观测回传 | 直连 | 经云端数据面转发 |
-
-安全策略（两种模式一致）：观测中断超过 `observation_timeout_s`、VR 数据流
-stale、或源缺关节值时，操作端**停发动作**；恢复后自动继续。机器人侧的
-`runtime.mode_control`（`teleop_enter`/`teleop_exit` 命令）可做接管/归还
-模式切换（见 `client/mode_control.py`）。
+安全策略：观测中断超过 `observation_timeout_s`、或源缺关节值时，操作端**停发动作**；恢复后自动继续。机器人侧的 `runtime.mode_control`（`teleop_enter`/`teleop_exit` 命令）可做接管/归还模式切换（见 `client/mode_control.py`）。
 
 ## 数据采集（遥操录制）
 
