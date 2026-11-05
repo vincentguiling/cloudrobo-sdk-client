@@ -1,4 +1,4 @@
-﻿# R2C 多设备管理（设备树）特性设计
+# R2C 多设备管理（设备树）特性设计
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"特性的功能设计；不属于本文件的内容：业界调研与代码完全调研见 `docs/research/`（`r2c-multi-device-industry-survey.md`、`cloudrobo-r2c-codebase-survey.md`），R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
@@ -93,7 +93,7 @@ opencv 相机 2
 | 设备通道声明（channels） | 设备在自己配置里声明所需 topic / 消息类型 / QoS（ROS）或串口帧格式等；由设备类型实现消费，传输上下文只负责按声明创建句柄 |
 | 设备（device） | 设备树的功能单元（本体、末端、相机、历史…）；`type` 经 `r2c_sdk.devices` entry-point 解析为具体实现；可绑定传输上下文（`transport`）或自带采集 |
 | 设备类型（device type） | entry-point 注册的设备实现名（如 `arm`、`gripper`、`opencv_camera`、`history`）；**历史/滤波/变换等都是设备类型**，不是特殊节点 |
-| 设备复用 | 同类设备用 YAML 标准锚点/别名/合并键（`&x`/`*x`/`<<:`）复用与微调；**不引入跨文件 include（非 YAML 标准）** |
+| 设备复用 | 同类设备用 YAML 标准锚点/别名/合并键（`&x`/`*x`/`<<:`）复用与微调 |
 | 环形缓冲（ring buffer） | 设备通用组件：按 `(设备, 通道)` 维度缓存最近 `history_window` 个样本（溢出覆盖最旧） |
 | 样本（sample） | 一个时刻的设备读数：`timestamp` + 数据载荷（复用 `ExtensionValue` 自描述结构） |
 | 窗口批（window batch） | 历史设备注入 `Observations.extensions` 的扩展字段（键 `<设备名>.window`）：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
@@ -128,7 +128,7 @@ opencv 相机 2
 | 设备身份 | 设备 `name` 全局唯一 + `type` 经 entry-point 解析 | 对齐 Viam 资源 name / ros2_control 块名惯例；树负责"是谁、挂在哪"，引用负责"用谁" |
 | 设备发现 | 配置 `devices` 段显式声明（设备是一等对象）+ 设备类型 entry-point；仅对仍为"整机驱动"的存量适配器保留 `describe_devices()` 兼容兜底 | ros2 `get_transport_targets`、a1z `camera_meta` 是旧模型雏形；新模型下设备清单由配置决定，传输层不再推导 |
 | 能力复用 | 新 entry-point 组 `r2c_sdk.devices`：`history`/`filter`/`tf` 与 `arm`/`gripper`/`opencv_camera` 同为一等设备类型 | ros2_control controller chaining / YARP remapper 同构：能力是设备，不是设备变体 |
-| 配置组织 | 存量单 hardware 块零改动；多设备 = hardware 列表（嵌套 devices 体现树层级）；同类设备用 YAML 原生锚点/合并键复用；**不引入跨文件 include** | 用户只需学习增量；树的层级由配置嵌套直观表达；配置为纯标准 YAML |
+| 配置组织 | 存量单 hardware 块零改动；多设备 = hardware 列表（嵌套 devices 体现树层级）；同类设备用 YAML 原生锚点/合并键复用 | 用户只需学习增量；树的层级由配置嵌套直观表达 |
 | 设备输出承载 | `Observations.extensions` 约定键 `<设备名>.window`，载荷 BYTES（proto 序列化） | 现有 `map<string, ExtensionValue>` 机制零侵入；观测唯一入口（C5） |
 | 上行频率 | 观测上行 = 云端模型调用频率（0.5Hz）；采样按设备 `sample_hz` 独立节拍写环形缓冲 | 现状 sync_client 单节拍（控制=采样=发布）需拆为双节拍 |
 
@@ -312,7 +312,7 @@ robot_config
 
 即：**配置错误在启动期被"能力不匹配"校验拦下，报错写明子节点 requires 什么、父节点实际 provides 什么**，而不是运行期才失败。
 
-**YAML 能力说明**：锚点/别名/合并键（`&x`/`*x`/`<<:`）是 **YAML 标准语法**，完全由标准解析器支持，不需要客户端实现任何预处理；多设备配置因此是**纯标准 YAML**。跨文件 include 不是 YAML 标准，本设计不引入。
+**YAML 能力说明**：锚点/别名/合并键（`&x`/`*x`/`<<:`）是 **YAML 标准语法**，完全由标准解析器支持，不需要客户端实现任何预处理；多设备配置因此是**纯标准 YAML**。
 
 **与旧设计的对比（本版修订点）**：
 
@@ -321,7 +321,7 @@ robot_config
 | 新顶层 `adapters` + `devices` 段，schema_version 升 v3.0 | **不新增顶层段**：`hardware` 单块→列表（可嵌套 devices），schema_version 不变 |
 | 用户需学习 `adapters`/`devices`/`transport`/`config_file` 一套新结构 | 用户只学两点：hardware 可为列表（项可嵌套 devices）、新增设备类型；其余全部沿用 |
 | 存量配置需迁移改写 | 存量配置**原样运行**；新增设备只需在 `hardware` 列表追加项 |
-| 设备复用靠 `config_file` 文件引用机制 | **YAML 原生锚点/合并键**复用（标准语法，无预处理）；跨文件 include 本设计不引入（非 YAML 标准） |
+| 设备复用靠 `config_file` 文件引用机制 | **YAML 原生锚点/合并键**复用（标准语法，无预处理） |
 
 **校验规则**：
 
@@ -509,7 +509,8 @@ extensions["<设备名>.window"] = ExtensionValue{
 5. 多机运维可视面（多机连接、批量部署、告警）；
 6. 存量 16 个 adapter 中，非 ROS 类（lerobot/ur5e/flexiv 等）仍是"整机驱动"，需按本设计拆成"上下文 + 设备类型"两段（ros2 适配器改为纯上下文，先做）；新增 `opencv_camera`、`history` 设备类型实现；
 7. 设备侧 topic 声明与 ros2 `SubscriptionConfig` 现有字段（含 `transforms`/`max_update_hz`）的对齐细则；
-8. rmw_zenoh liveliness 上下线事件替代心跳轮询（长期演进）。
+8. 跨文件引用支持：YAML 标准无跨文件 include，当前多设备配置为单文件（复用靠原生锚点/合并键）；配置规模增长需要拆分文件时，再评估引入方式（自定义 `!include` 标签/loader 注册、或引用预处理）及路径安全（目录沙箱、防环）；
+9. rmw_zenoh liveliness 上下线事件替代心跳轮询（长期演进）。
 
 ## 10. 决策点汇总
 
@@ -522,8 +523,9 @@ extensions["<设备名>.window"] = ExtensionValue{
 | D5 | 设备输出 health 与 Heartbeat 的分工 | 设备输出只描述本设备，整机以 Heartbeat 为准 |
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
 | D7 | 设备输出承载方式 | **已定案**：不新起 topic，观测唯一入口，extensions 承载，云端不感知端侧实现 |
-| D8 | 配置引用机制 | **已定案（2026-11-05 三次）**：兼容优先——不新增顶层段，`hardware` 单块→列表（项可嵌套 devices 体现树层级）；复用用 YAML 原生锚点/合并键；**不引入跨文件 include**（配置为纯标准 YAML） |
+| D8 | 配置引用机制 | **已定案（2026-11-05 三次）**：兼容优先——不新增顶层段，`hardware` 单块→列表（项可嵌套 devices 体现树层级）；复用用 YAML 原生锚点/合并键（配置为纯标准 YAML） |
 | D9 | 传输上下文与设备的职责边界 | **已定案（2026-11-05）**：上下文只提供节点/连接与建订阅/发布句柄（`create_subscription`/`create_publisher`），**topic 与消息类型由设备配置声明**；适配器不感知设备语义 |
+
 
 
 
