@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v0.7，待评审**。一致性修订（2026-11-05）：统一"会话生命周期门控"与"发布权交接"的表述——客户端维护会话状态并据此门控，发布权交接是上层编排语义（客户端不判断接管权限）；执行规则明确为会话状态 + 新鲜度两层判定。v0.5：①`teleop/observations` **只在本地流转、不上云**（由本地操作台端录制保存），数据格式与内容与 `inference/observations` 一致；**图像通过推拉流上云**；②遥操输入两类：**同构臂遥操**（操作前位姿对齐到当前位姿，读 `inference/observations`）；**VR 遥操**（相对位姿，首帧对齐 `end_effector_pose`）；③`teleop/actions` 下发频率 **20Hz**。v0.6 增补（2026-11-05 反馈）：**新增 `teleop/start|pause|resume|finish|quit` 五个会话生命周期话题**；**非数采状态下客户端不接收&执行 `teleop/actions`**；**给出 client 改进方案**（r2c 增量 vs 独立 teleop 包，参考 metaquest-dist 设计资料，见 §11）。更早版本：teleop 动作/观测独立话题、采集录 teleop 两话题、客户端不区分本地/远程。只出设计，不含实现。
+> 状态：**v0.8，待评审**。v0.7：消除"生命周期门控"与"发布权交接"表述矛盾——客户端感知会话状态并据此门控，不判断接管权限；执行规则为会话状态 + 新鲜度两层判定。v0.8 增补（2026-11-05 反馈）：**新增 `teleop/observations` 录制 → LeRobot v2.1/v3 格式转换设计**（transformer 自定义转换管道；v3 从 v2.1 两段式转换，见 §3.3.2）；**§3.3 按功能重排**（3.3.1 遥操功能实现、3.3.2 数据采集与格式转换、3.3.3 接口设计、3.3.4 数据结构设计）。更早版本：teleop 动作/观测独立话题（20Hz）、观测仅本地不上云（格式同 inference）、图像推拉流上云、同构臂对位/VR 相对位姿、生命周期五话题门控、客户端不区分本地/远程。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -176,23 +176,21 @@ sequenceDiagram
 
 ### 3.3 详细功能设计
 
-#### 3.3.1 功能原理
+> 3.3 按功能拆分：3.3.1 遥操功能实现（客户端执行侧）、3.3.2 数据采集与格式转换（录制与导出）、3.3.3 接口设计（共享话题/配置/CLI）、3.3.4 数据结构设计（录制目录）。
+
+#### 3.3.1 遥操功能实现
+
+##### 3.3.1.1 功能原理
 
 - **动作订阅与执行规则（会话状态 + 新鲜度两层判定）**：客户端同时订阅 `inference/actions` 与 `teleop/actions`（20Hz 操作节拍）。
   - `IDLE` / `FINISHING`：只执行 `inference/actions`；`teleop/actions` 丢弃（计数告警）；
   - `RUNNING`：`teleop/actions` 在 `timeout_ms`（默认 300ms）内新鲜 → 执行遥操；遥操过期 → 回退 `inference/actions`（不改变会话状态）；两路都过期 → 停止并保持；
   - `PAUSED`：两路都不执行（保持位姿），避免"暂停遥操但策略继续动"。
   仲裁只在来源之间选择，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
-- **同构臂位姿预对齐**：遥操开始前，操作台读取当前位姿（`inference/observations` 的 `end_effector_pose`/关节位姿），驱动主臂运动到该位姿；对齐完成（误差 < 阈值）前操作台不下发 `teleop/actions`。对齐由操作台侧流程完成，客户端无需新状态机。
-- **VR 相对位姿遥操**：VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effector_pose` 对齐；之后按 VR 相对位姿增量（平移+旋转）叠加到参考位姿生成目标末端位姿。首帧对齐与增量映射在操作台/VR 侧实现。
-- **遥操观测发布**：客户端在控制循环的每个 `publish_hz` 节拍组装 Observations，发布到 `teleop/observations`；**发布时段与会话门控一致**——RUNNING/PAUSED 态发布（PAUSED 供操作台确认现场），IDLE/FINISHING 停止发布。**格式与内容与 `inference/observations` 一致（同一 `Observations` 消息）**，区别仅在话题、频率（`publish_hz` vs 0.5Hz）与流转范围（仅本地、不上云）。图像不在此话题承载上云。
-- **图像推拉流**：相机画面由客户端推到流媒体服务（复用现有视频通道/三方流媒体，本版只约定对接方式），云端/远程操作台拉流观看；`teleop/observations` 保持轻量（非图像字段），仅本地流转。
 - **本地/远程统一**：操作台无论本地进程还是远端节点，都向 `teleop/actions` 发布；`teleop/observations` 的消费者与录制器在本地。客户端无模式分支。
 - **接管与交还（发布权交接 + 会话门控）**：接管 = 操作台发 `teleop/start` 进入 RUNNING 并开始发布 `teleop/actions`，同时策略停止下发；交还 = 操作台停发遥操或发 `finish`/`quit`。客户端按会话状态 + 动作新鲜度决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）；即"发布权交接"是上层编排语义，客户端只消费结果。
-- **采集**：本地录制器订阅 `teleop/actions` + `teleop/observations`，原样落盘（R2CR v1，按 topic 分文件），按大小/时长轮转；可选 `meta.json` 记设备树快照与配置哈希。
-- **回放**：按录制文件与 topic 回放；playback 设备类型注入设备树。
 
-#### 3.3.2 会话生命周期与数采门控
+##### 3.3.1.2 会话生命周期与数采门控
 
 客户端维护会话状态机（事件源为五个生命周期话题 + 内置超时）：
 
@@ -223,7 +221,84 @@ message TeleopControl {
 ```
 
 - **发布者**：操作台/云端控制台均可发布（权限由 Zenoh ACL 控制）；本地操作台"开始采集"按钮即发 `teleop/start`。
-- **超时兜底**：`RUNNING` 态下 `teleop/actions` 持续过期（默认超过 `timeout_ms`）→ 按 3.3.1 回退策略动作，会话状态不变（仍 RUNNING，操作台恢复发布即重新执行遥操）；`PAUSED`/`IDLE`/`FINISHING` 则直接阻断遥操执行。会话整体无动作时停止并保持。
+- **超时兜底**：`RUNNING` 态下 `teleop/actions` 持续过期（默认超过 `timeout_ms`）→ 按 3.3.1.1 回退策略动作，会话状态不变（仍 RUNNING，操作台恢复发布即重新执行遥操）；`PAUSED`/`IDLE`/`FINISHING` 则直接阻断遥操执行。会话整体无动作时停止并保持。
+
+##### 3.3.1.3 同构臂位姿预对齐
+
+遥操开始前，操作台读取当前位姿（`inference/observations` 的 `end_effector_pose`/关节位姿），驱动主臂运动到该位姿；对齐完成（误差 < 阈值）前操作台不下发 `teleop/actions`。对齐由操作台侧流程完成，客户端无需新状态机。
+
+##### 3.3.1.4 VR 相对位姿遥操
+
+VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effector_pose` 对齐；之后按 VR 相对位姿增量（平移+旋转）叠加到参考位姿生成目标末端位姿。首帧对齐与增量映射在操作台/VR 侧实现。
+
+##### 3.3.1.5 遥操观测发布
+
+客户端在控制循环的每个 `publish_hz` 节拍组装 Observations，发布到 `teleop/observations`；**发布时段与会话门控一致**——RUNNING/PAUSED 态发布（PAUSED 供操作台确认现场），IDLE/FINISHING 停止发布。**格式与内容与 `inference/observations` 一致（同一 `Observations` 消息）**，区别仅在话题、频率（`publish_hz` vs 0.5Hz）与流转范围（仅本地、不上云）。图像不在此话题承载上云。
+
+##### 3.3.1.6 图像推拉流上云
+
+相机画面由客户端推到流媒体服务（复用现有视频通道/三方流媒体，本版只约定对接方式），云端/远程操作台拉流观看；`teleop/observations` 保持轻量（非图像字段），仅本地流转。
+
+#### 3.3.2 数据采集与格式转换
+
+##### 3.3.2.1 话题录制（R2CR）
+
+- 本地录制器订阅 `teleop/actions` + `teleop/observations`，原样落盘（R2CR v1，按 topic 分文件），按大小/时长轮转；可选 `meta.json` 记设备树快照与配置哈希（数据结构见 §3.3.4）。
+- 回放：按录制文件与 topic 回放；playback 设备类型注入设备树。
+- 录制文件是格式转换（3.3.2.2~3.3.2.4）的唯一输入源。
+
+##### 3.3.2.2 转换管线与 transformer 抽象
+
+录制文件（R2CR + meta.json）→ **LeRobot 数据集**的转换采用可插拔 transformer 管道：
+
+```text
+recordings/*.r2cr + meta.json
+  → EpisodeSplitter（按 meta 会话记录分段：start..finish 为一个 episode；pause/resume 打段边界标记）
+  → FrameDecoder（按 topic 反序列化：teleop/observations → Observations，teleop/actions → Actions）
+  → Transformer 管道（可插拔，逐帧变换）
+  → LeRobotWriter（v2.1 / v3 写出）
+```
+
+**Transformer 抽象**（与 r2c 既有 `transformers/` 注册表机制一致，`r2c_sdk.transformers` entry-point 注册）：
+
+- 每个 transformer 声明 `input_keys → output_keys` 与 `transform(frame, ctx) → frame`，可级联；
+- 内置 transformer：`decode_image`（jpeg/webp bytes → ndarray，供视频编码）、`joint_rename`（R2C 关节名 → LeRobot feature 名）、`gripper_normalize`（开度区间归一）、`resample`（20Hz 动作/`publish_hz` 观测 → 数据集目标 fps 对齐）、`drop_keys`；
+- 自定义转换：第三方以 entry-point 注册 transformer 并在转换配置中声明管道（`convert.yaml`），不改核心代码；
+- 对齐规则：以 `teleop/observations` 帧时间戳为主时间轴，`teleop/actions` 按最近邻对齐到观测时间戳（LeRobot `action` 为观测时刻的下发动作，与"观测+动作成对"语义一致）。
+
+##### 3.3.2.3 LeRobot v2.1 导出
+
+- **输出结构**：LeRobotDataset v2.1 目录（`meta/info.json`、`meta/episodes.jsonl`、`meta/tasks.jsonl`、`data/chunk-*/episode_*.parquet`、`videos/chunk-*/`）；
+- **字段映射**（默认，可被 transformer 覆盖）：
+  - `observation.state` ← `teleop/observations.joint_states`（names+position）；
+  - `observation.images.<cam>` ← `teleop/observations.images`（解码后按 fps 编码 mp4）；
+  - `action` ← `teleop/actions.joint_states.position[0]`（或 ee 模式的 `end_effector_poses`，按操作模式二选一）；
+  - `timestamp` ← 观测帧相对 episode 起始秒；`episode_index/task_index` ← EpisodeSplitter 与 meta 任务字段；
+- **元数据**：`meta.json` 的会话记录（session_id、input_mode、接管分段）写入 episodes 元数据扩展字段（v2.1 允许额外列/字段）。
+
+##### 3.3.2.4 LeRobot v3 导出（从 v2.1 转换）
+
+- **两段式**：v3 导出器 = v2.1 导出 + v2.1→v3 升级转换（沿用 LeRobot 官方升级语义：数据布局与元数据结构差异由升级器处理），不重复实现逐帧转换；
+- **直接模式（可选）**：transformer 管道末级挂 `LeRobotV3Writer` 直接写出 v3（省一次中间落盘）；两条路径产物等价，默认两段式（实现简单、可复用 v21 校验）；
+- **校验**：导出后用 `cloudrobo-ingestion` 既有 `lerobot_v3` 校验器验证（复用回流链路，不再自建校验）。
+
+##### 3.3.2.5 转换配置与 CLI
+
+```yaml
+convert:
+  input_dir: ./recordings
+  format: lerobot_v21          # lerobot_v21 | lerobot_v3 | lerobot_v3_from_v21（默认两段式）
+  transformers:                # 管道声明（按序执行）
+    - decode_image
+    - joint_rename: {mapping_file: robots/so_follower/mapping.yaml}
+    - resample: {fps: 30}
+  output_dir: ./datasets
+```
+
+| 命令 | 说明 |
+|------|------|
+| `cloudrobo r2c convert --config convert.yaml` | 执行转换（单目录批处理） |
+| `cloudrobo r2c convert --validate` | 导出后运行 lerobot_v3 校验 |
 
 #### 3.3.3 接口设计
 
@@ -232,7 +307,7 @@ message TeleopControl {
 | 话题 | 方向 | 频率 | 说明 |
 |------|------|------|------|
 | `{p}/{d}/inference/actions` | 策略 → 客户端 | 策略驱动 | 现有；策略动作 |
-| `{p}/{d}/teleop/actions` | 操作台 → 客户端 | **20Hz** | **新增**；本地/远程遥操动作（**仅 RUNNING 态被执行**，见 §3.3.2） |
+| `{p}/{d}/teleop/actions` | 操作台 → 客户端 | **20Hz** | **新增**；本地/远程遥操动作（**仅 RUNNING 态被执行**，见 §3.3.1.2） |
 | `{p}/{d}/teleop/start` | 控制端 → 客户端 | 事件 | **新增**；开始遥操会话（进入数采/RUNNING，录制启动） |
 | `{p}/{d}/teleop/pause` | 控制端 → 客户端 | 事件 | **新增**；暂停（不执行 teleop/actions，录制分段） |
 | `{p}/{d}/teleop/resume` | 控制端 → 客户端 | 事件 | **新增**；恢复（回到 RUNNING） |
@@ -267,10 +342,11 @@ collection:                                          # 本地操作台侧录制�
 | `--record-dir <dir>` | 录制目录 |
 | `cloudrobo r2c record status` | 录制状态：topic、文件数、大小 |
 | `cloudrobo r2c replay <record_dir>` | 回放 |
+| `cloudrobo r2c convert` | R2CR → LeRobot v2.1/v3 导出（§3.3.2.5） |
 
 操作台职责：**本地操作台** = 发布 `teleop/actions`（20Hz）与生命周期话题、订阅 `teleop/observations` 并本地录制；**远程操作台** = 发布 `teleop/actions` 与生命周期话题，画面经推拉流观看，**不订阅 `teleop/observations`**（不上云）。客户端无对应命令。
 
-**界面设计**：无图形界面；录制状态用 CLI 与日志。
+**界面设计**：无图形界面；录制/转换状态用 CLI 与日志。
 
 #### 3.3.4 数据结构设计
 
@@ -284,7 +360,7 @@ recordings/
 ```
 
 - 文件内容沿用 **R2CR v1**（magic/version/frame_count/索引），帧为消息字节 + 时间戳；不引入新格式。
-- 轮转按大小（默认 512MB）或时长（默认 10min），文件名带起始时间；`meta.json` 为可选旁注，不参与回放正确性。
+- 轮转按大小（默认 512MB）或时长（默认 10min），文件名带起始时间；`meta.json` 为可选旁注，不参与回放正确性，但**参与 episode 分段**（§3.3.2.2）。
 
 ## 4. 可靠性与异常设计
 
@@ -326,7 +402,7 @@ recordings/
 
 | 层级 | 内容 |
 |------|------|
-| 单测 | 来源仲裁（RUNNING 态内：遥操优先/超时回退/双超时停）、生命周期状态机转移与非法转移拒绝、录制轮转与命名、回放解析、meta 生成 |
+| 单测 | 来源仲裁（RUNNING 态内：遥操优先/超时回退/双超时停）、生命周期状态机转移与非法转移拒绝、EpisodeSplitter 分段、内置 transformer（decode_image/joint_rename/resample）、录制轮转与命名、回放解析、meta 生成 |
 | 集成（仲裁） | RUNNING 会话内策略与遥操交替发布：遥操新鲜时执行遥操、停止后回退策略、双停则停止 |
 | 集成（生命周期门控） | 五话题驱动状态机：IDLE 下发 teleop/actions 被丢弃不执行；start 后执行；pause 停止执行且策略保持；resume 恢复；finish 落盘后回 IDLE 再次阻断；quit 丢弃未落盘数据；非法转移（IDLE 收 resume）忽略并告警 |
 | 集成（同构臂对齐） | 模拟主臂位姿 ≠ 当前位姿：对齐完成前操作台不下发；对齐后跟随 |
@@ -334,6 +410,7 @@ recordings/
 | 集成（遥操观测） | 校验 `teleop/observations` 以 `publish_hz` 发布（±10%）、仅本地订阅可见、格式与 `inference/observations` 一致 |
 | 集成（推拉流） | 图像经流媒体可拉流观看；teleop/observations 无图像上云负载 |
 | 集成（录制/回放） | 本地录制两话题，文件完整、可回放；磁盘满停止录制 |
+| 集成（格式转换） | 录制 → lerobot_v21 导出：episode 按 start..finish 分段、字段映射正确、视频编码可读；lerobot_v3 两段式与直接模式产物等价；自定义 transformer 管道生效；导出通过 lerobot_v3 校验 |
 | 验收标准 | 遥操与策略动作分话题且互不覆盖；`teleop/actions` 20Hz、`teleop/observations` 符合 `publish_hz` 且不上云；图像经推拉流可看；同构臂/VR 两模式按 3.3.1 语义工作；非 RUNNING 态 `teleop/actions` 不被执行；客户端无本地/远程分支 |
 
 ## 9. 遗留问题与后续规划
@@ -341,10 +418,11 @@ recordings/
 1. 推拉流服务端选型与对接（复用现有视频通道或三方流媒体；本期只约定客户端推流接口）；
 2. 同构臂对齐的阈值与操作台引导 UI（对齐进度/误差显示）；
 3. VR 相对位姿映射的奇异位形/工作空间边界保护；
-4. 录制文件与 `cloudrobo-ingestion` 的目录/元数据对接细则（本地录制 → 上传）；
+4. 录制文件与 `cloudrobo-ingestion` 的目录/元数据对接细则（转换产物 lerobot_v21/v3 → 上传）；
 5. 远程遥操时延测量与跨公网 QoS 调优（动作 20Hz + 拉流）；
 6. 操作台侧工具（主臂/手柄/VR 发布端）与校准；
-7. 录制期间的 episode 分段（按接管起止自动切文件）。
+7. episode 分段与多轮采集（会话内 pause/resume 段合并 vs 独立 episode 的数据集语义）；
+8. 视频编码依赖（LeRobot 导出需 ffmpeg/av；依赖随 teleop 包 optional extra 分发）；
 
 ## 10. 决策点汇总
 
@@ -361,6 +439,7 @@ recordings/
 | U9 | 配置项范围 | 建议：`teleop.actions_topic/observations_topic/actions_rate_hz/timeout_ms` + `collection.record/output_dir`；待评审 |
 | U10 | 会话生命周期话题与门控 | **已定案（2026-11-05 反馈）**：新增 `teleop/start|pause|resume|finish|quit` 五话题；非数采（非 RUNNING）态不接收&执行 `teleop/actions`；状态机与采集耦合细节（§3.3.2）待评审 |
 | U11 | client 改进方案（r2c 增量 vs 独立 teleop 包） | 建议：机器人端小增量留在 r2c + 新增独立 `hw-cloudrobo-teleop` 包承载操作端运行时与协议契约（§11）；待评审 |
+| U12 | LeRobot 格式转换 | 建议：transformer 管道（复用 r2c transformers 注册表机制）+ v2.1 导出 + v3 两段式（v21→v3 升级转换），直接模式可选；ingestion 既有 lerobot_v3 校验复用（§3.3.2）；待评审 |
 
 ## 11. client 改进方案：r2c 增量开发 vs 独立 teleop 包
 
