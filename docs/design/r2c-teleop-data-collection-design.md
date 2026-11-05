@@ -1,4 +1,4 @@
-﻿# R2C 遥操与数据采集特性设计
+# R2C 遥操与数据采集特性设计
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
@@ -42,7 +42,7 @@
 
 ### 2.2 场景分析
 
-**场景 1：遥操接管（主力）。** 策略在 `inference/actions` 上执行；操作员发 `teleop/start` 进入会话（RUNNING），开始向 `teleop/actions`（20Hz）发布。客户端在该状态下以新鲜遥操为准；操作台停止发布后自动回退策略动作，会话仍为 RUNNING；`pause` 则整机保持。接管期间 `teleop/observations` 按 `publish_hz` 本地发布（操作台反馈 + 本地录制），图像另行推拉流上云供远程观看。
+**场景 1：遥操接管（主力）。** 策略在 `inference/actions` 上执行；操作员发 `teleop/start` 进入会话（RUNNING），开始向 `teleop/actions`（20Hz）发布。客户端在该状态下以新鲜遥操为准；操作台停止发布后自动回退策略动作，会话仍为 RUNNING；`pause` 则整机保持。**会话结束（交还）由 `teleop/finish`/`quit` 显式驱动**，回 IDLE 后恢复纯策略执行。接管期间 `teleop/observations` 按 `publish_hz` 本地发布（操作台反馈 + 本地录制），图像另行推拉流上云供远程观看。
 
 **场景 2：同构臂遥操（同型号臂作主臂）。** 开始遥操前，客户端/操作台先把同构臂（主臂）的位姿**对齐到当前从臂位姿**（读 `inference/observations` 的当前 `end_effector_pose`/关节位姿），对齐完成前不下发动作；对齐后主臂增量即从臂增量。
 
@@ -62,7 +62,7 @@
 | 同构臂位姿预对齐 | ✗ | ✔ 操作前对齐到当前位姿（读 inference/observations） |
 | VR 相对位姿遥操 | ✗ | ✔ 首帧对齐 `end_effector_pose`，后续增量 |
 | 本地/远程一致 | 概念上分叉 | ✔ 同一 `teleop/actions`，客户端不分 |
-| 动作来源仲裁 | 无 | ✔ 遥操新鲜优先、超时回退策略 |
+| 动作来源仲裁 | 无 | ✔ 仅 RUNNING 态内：遥操新鲜优先、超时回退策略（策略持续发布） |
 | 本地端录制两话题 | ✗ | ✔ `teleop/actions` + `teleop/observations` |
 | 回放 | 整机帧回放 | ✔ 按 topic 回放 |
 
@@ -86,7 +86,7 @@
 | VR 相对位姿遥操 | VR 首帧位姿与从臂当前 `end_effector_pose` 对齐建立参考系，之后按 VR 相对位姿增量驱动 |
 | 动作来源仲裁 | 客户端在遥操动作与策略动作之间的执行选择规则：会话 RUNNING 时遥操新鲜优先，遥操过期回退策略；PAUSED 两路都停 |
 | 会话状态门控 | 客户端维护数采会话状态（IDLE/RUNNING/PAUSED/FINISHING），仅 RUNNING 接收执行 `teleop/actions`；**客户端感知"会话状态"，但不判断"接管权限/归属"**（谁可接管由 Zenoh ACL 与操作台约定） |
-| 发布权交接 | 上层编排语义：会话开始时策略停止下发、操作台开始发布 `teleop/actions`（反之亦然）；客户端不跟踪"谁在控制"，只按会话状态 + 动作新鲜度执行 |
+| 发布权交接 | 上层编排语义：接管 = `teleop/start` 进入 RUNNING 后操作台发布 `teleop/actions` 即被执行；**策略在会话期间持续发布**（作为遥操过期时的回退来源）；交还 = `finish`/`quit` 回 IDLE 恢复纯策略执行。客户端不跟踪"谁在控制"，只按会话状态 + 动作新鲜度执行 |
 | 录制器 | 订阅指定 topic、按到达时序落盘的订阅者（R2CR 格式） |
 
 ## 3. 功能方案
@@ -151,7 +151,8 @@ sequenceDiagram
 
     P->>C: inference/actions（自主）
     O->>C: teleop/start（进入 RUNNING 会话，录制启动）
-    Note over O,C: 会话 RUNNING：仅此状态执行遥操动作
+    Note over P,C: 会话 RUNNING：策略持续发布（回退来源）；仅遥操新鲜时覆盖
+    Note over O,C: 仅此状态执行遥操动作
     O->>C: 读取当前位姿请求（读 inference/observations）
     C-->>O: 当前 end_effector_pose / 关节位姿
     alt 同构臂
@@ -188,7 +189,7 @@ sequenceDiagram
   - `PAUSED`：两路都不执行（保持位姿），避免"暂停遥操但策略继续动"。
   仲裁只在来源之间选择，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
 - **本地/远程统一**：操作台无论本地进程还是远端节点，都向 `teleop/actions` 发布；`teleop/observations` 的消费者与录制器在本地。客户端无模式分支。
-- **接管与交还（发布权交接 + 会话门控）**：接管 = 操作台发 `teleop/start` 进入 RUNNING 并开始发布 `teleop/actions`，同时策略停止下发；交还 = 操作台停发遥操或发 `finish`/`quit`。客户端按会话状态 + 动作新鲜度决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）；即"发布权交接"是上层编排语义，客户端只消费结果。
+- **接管与交还（会话门控）**：接管 = 控制端发 `teleop/start` 进入 RUNNING（录制启动），此后操作台发布 `teleop/actions` 即被执行；**策略在会话期间持续发布、不停发**——作为遥操过期时的回退来源；交还 = 控制端显式发 `finish`/`quit`（回 IDLE，恢复纯策略执行）。会话内操作台停发遥操仅触发新鲜度回退（§3.3.1.1），**不构成交还**。客户端按会话状态 + 动作新鲜度决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）。
 
 ##### 3.3.1.2 会话生命周期与数采门控
 
