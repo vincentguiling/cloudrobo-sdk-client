@@ -1,4 +1,4 @@
-﻿# R2C 遥操与数据采集特性设计
+# R2C 遥操与数据采集特性设计
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
@@ -9,7 +9,7 @@
 **背景**：本特性主力场景是**遥操接管**——机器人按云端策略自主执行，遇异常时操作员接管，处理完交还自主；接管时段是价值最高的训练数据（回流配置中 `collect_method` 已有"遥操接管"）。现状：r2c 只有整机原始观测录制（`ObservationRecorder` + `--record`，cloudroboclient.py:188-193）与回放；遥操在 r2c 之外（LeRobot teleoperate、`--teleop.joint_sign`）。
 
 **核心思路**：
-1. **遥操动作独立话题**：`{p}/{d}/teleop/actions`，**20Hz** 下发，与策略动作 `{p}/{d}/inference/actions` 分开，互不覆盖；客户端两条来源都订阅，按"遥操新鲜优先、否则策略"执行。
+1. **遥操动作独立话题**：`{p}/{d}/teleop/actions`，**20Hz** 下发，与策略动作 `{p}/{d}/inference/actions` 分开，互不覆盖；客户端两条来源都订阅，"遥操新鲜优先、否则策略"的仲裁**仅在 RUNNING 态内生效**（非 RUNNING 态遥操动作直接丢弃，见核心思路 6 与 §3.3.2）。
 2. **遥操观测独立话题**：`{p}/{d}/teleop/observations`，按 `publish_hz` 发布，**只在本地流转、不上云**（由本地操作台端录制保存）；**数据格式与内容与 `inference/observations` 一致**（同一 `Observations` 消息）。**图像通过推拉流上云**（不经 teleop/observations 承载，见 3.3.1）。
 3. **本地/远程不区分**：本地操作台与远程操作员都发布到同一个 `teleop/actions`，客户端无本地/远程分支。
 4. **采集=本地端录制两个话题**：`teleop/actions` 与 `teleop/observations`（本地录制器）。
@@ -18,7 +18,8 @@
 
 **目标**：
 - 新增 `teleop/actions`（20Hz，客户端订阅、执行）与 `teleop/observations`（客户端按 `publish_hz` 发布，仅本地流转）；
-- 两条动作来源的仲裁规则（遥操优先、超时回退策略）；
+- 会话生命周期门控：五话题驱动的客户端状态机（§3.3.2），仅 RUNNING 态执行遥操动作；
+- 两条动作来源的仲裁规则（仅 RUNNING 态内：遥操优先、超时回退策略）；
 - 同构臂遥操的位姿预对齐流程；VR 遥操的相对位姿模式；
 - 本地端录制 `teleop/actions` + `teleop/observations`，可轮转、可回放；
 - 图像经推拉流上云（teleop/observations 不承载图像上云）；
@@ -170,7 +171,7 @@ sequenceDiagram
         ZO->>R: 录制
     end
     C->>C: 图像推流 → 流媒体（上云，不经 ZO）
-    Note over O,ZA: 操作台停止发布 → 超时 → 回退策略
+    Note over O,ZA: 会话内操作台停发 → 超时 → 回退策略（会话仍 RUNNING）；交还由 finish/quit 驱动
 ```
 
 ### 3.3 详细功能设计
@@ -184,7 +185,7 @@ sequenceDiagram
   仲裁只在来源之间选择，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
 - **同构臂位姿预对齐**：遥操开始前，操作台读取当前位姿（`inference/observations` 的 `end_effector_pose`/关节位姿），驱动主臂运动到该位姿；对齐完成（误差 < 阈值）前操作台不下发 `teleop/actions`。对齐由操作台侧流程完成，客户端无需新状态机。
 - **VR 相对位姿遥操**：VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effector_pose` 对齐；之后按 VR 相对位姿增量（平移+旋转）叠加到参考位姿生成目标末端位姿。首帧对齐与增量映射在操作台/VR 侧实现。
-- **遥操观测发布**：客户端在控制循环的每个 `publish_hz` 节拍组装 Observations，发布到 `teleop/observations`。**格式与内容与 `inference/observations` 一致（同一 `Observations` 消息）**，区别仅在话题、频率（`publish_hz` vs 0.5Hz）与流转范围（仅本地、不上云）。图像不在此话题承载上云。
+- **遥操观测发布**：客户端在控制循环的每个 `publish_hz` 节拍组装 Observations，发布到 `teleop/observations`；**发布时段与会话门控一致**——RUNNING/PAUSED 态发布（PAUSED 供操作台确认现场），IDLE/FINISHING 停止发布。**格式与内容与 `inference/observations` 一致（同一 `Observations` 消息）**，区别仅在话题、频率（`publish_hz` vs 0.5Hz）与流转范围（仅本地、不上云）。图像不在此话题承载上云。
 - **图像推拉流**：相机画面由客户端推到流媒体服务（复用现有视频通道/三方流媒体，本版只约定对接方式），云端/远程操作台拉流观看；`teleop/observations` 保持轻量（非图像字段），仅本地流转。
 - **本地/远程统一**：操作台无论本地进程还是远端节点，都向 `teleop/actions` 发布；`teleop/observations` 的消费者与录制器在本地。客户端无模式分支。
 - **接管与交还（发布权交接 + 会话门控）**：接管 = 操作台发 `teleop/start` 进入 RUNNING 并开始发布 `teleop/actions`，同时策略停止下发；交还 = 操作台停发遥操或发 `finish`/`quit`。客户端按会话状态 + 动作新鲜度决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）；即"发布权交接"是上层编排语义，客户端只消费结果。
@@ -203,7 +204,7 @@ RUNNING/PAUSED --quit--> IDLE（丢弃当前会话未落盘数据）
 ```
 
 - **门控规则（核心安全语义）**：仅 **RUNNING** 态下客户端接收&执行 `teleop/actions`；IDLE/PAUSED/FINISHING 态收到的遥操动作一律丢弃（计数并限频告警）。PAUSED 时策略动作也不执行（整体保持），避免"暂停遥操但策略继续动"的意外。
-- **与采集的耦合**：`start` 同时启动本地录制器（两话题）；`pause/resume` 在录制文件上打分段标记；`finish` 收尾落盘并生成 `meta.json`；`quit` 丢弃未完成数据。数采与遥操执行共用同一状态机，天然满足"不在数采状态下不接收&执行 teleop/actions"。
+- **与采集的耦合**：录制器在**本地操作台侧**，与客户端消费同一组生命周期事件——操作台发 `start` 时同时启动录制器（两话题），`pause/resume` 在录制文件上打分段标记，`finish` 收尾落盘并生成 `meta.json`，`quit` 丢弃未完成数据；客户端只负责执行门控与观测发布，不持有录制器。数采与遥操执行共用同一状态机，天然满足"不在数采状态下不接收&执行 teleop/actions"。
 - **消息形态**：生命周期话题 payload 为轻量事件帧（`{timestamp, session_id, operator}` JSON 或复用 `CommandMessage` proto），客户端不校验内容语义，收到即按话题名转移状态；幂等：重复/乱序事件按状态机合法性检查忽略。建议用 proto 固化（只增不改）：
 
 ```protobuf
@@ -267,7 +268,7 @@ collection:                                          # 本地操作台侧录制�
 | `cloudrobo r2c record status` | 录制状态：topic、文件数、大小 |
 | `cloudrobo r2c replay <record_dir>` | 回放 |
 
-本地/远程操作台都只做"发布 `teleop/actions`、订阅 `teleop/observations`"，客户端无对应命令。
+操作台职责：**本地操作台** = 发布 `teleop/actions`（20Hz）与生命周期话题、订阅 `teleop/observations` 并本地录制；**远程操作台** = 发布 `teleop/actions` 与生命周期话题，画面经推拉流观看，**不订阅 `teleop/observations`**（不上云）。客户端无对应命令。
 
 **界面设计**：无图形界面；录制状态用 CLI 与日志。
 
@@ -325,15 +326,15 @@ recordings/
 
 | 层级 | 内容 |
 |------|------|
-| 单测 | 来源仲裁（遥操优先/超时回退/双超时停）、录制轮转与命名、回放解析、meta 生成 |
-| 集成（仲裁） | 策略与遥操交替发布：遥操新鲜时执行遥操、停止后回退策略、双停则停止 |
+| 单测 | 来源仲裁（RUNNING 态内：遥操优先/超时回退/双超时停）、生命周期状态机转移与非法转移拒绝、录制轮转与命名、回放解析、meta 生成 |
+| 集成（仲裁） | RUNNING 会话内策略与遥操交替发布：遥操新鲜时执行遥操、停止后回退策略、双停则停止 |
 | 集成（生命周期门控） | 五话题驱动状态机：IDLE 下发 teleop/actions 被丢弃不执行；start 后执行；pause 停止执行且策略保持；resume 恢复；finish 落盘后回 IDLE 再次阻断；quit 丢弃未落盘数据；非法转移（IDLE 收 resume）忽略并告警 |
 | 集成（同构臂对齐） | 模拟主臂位姿 ≠ 当前位姿：对齐完成前操作台不下发；对齐后跟随 |
 | 集成（VR 相对位姿） | 首帧对齐 end_effector_pose 后，增量映射正确、参考系不漂移 |
 | 集成（遥操观测） | 校验 `teleop/observations` 以 `publish_hz` 发布（±10%）、仅本地订阅可见、格式与 `inference/observations` 一致 |
 | 集成（推拉流） | 图像经流媒体可拉流观看；teleop/observations 无图像上云负载 |
 | 集成（录制/回放） | 本地录制两话题，文件完整、可回放；磁盘满停止录制 |
-| 验收标准 | 遥操与策略动作分话题且互不覆盖；`teleop/actions` 20Hz、`teleop/observations` 符合 `publish_hz` 且不上云；图像经推拉流可看；同构臂/VR 两模式按 3.3.1 语义工作；客户端无本地/远程分支 |
+| 验收标准 | 遥操与策略动作分话题且互不覆盖；`teleop/actions` 20Hz、`teleop/observations` 符合 `publish_hz` 且不上云；图像经推拉流可看；同构臂/VR 两模式按 3.3.1 语义工作；非 RUNNING 态 `teleop/actions` 不被执行；客户端无本地/远程分支 |
 
 ## 9. 遗留问题与后续规划
 
@@ -355,7 +356,7 @@ recordings/
 | U4 | 遥操动作下发频率 | **已定案**：20Hz |
 | U5 | teleop/observations 流转范围与格式 | **已定案**：仅本地流转不上云，格式与内容与 inference/observations 一致；图像走推拉流 |
 | U6 | 遥操输入模式 | **已定案**：同构臂（位姿预对齐）与 VR（相对位姿，首帧对齐 end_effector_pose）两类 |
-| U7 | 动作来源仲裁规则 | 建议：遥操新鲜优先（`timeout_ms` 默认 300），超时回退策略，双超时停止；待评审 |
+| U7 | 动作来源仲裁规则 | 建议：仅 RUNNING 态内生效——遥操新鲜优先（`timeout_ms` 默认 300），超时回退策略，双超时停止；待评审 |
 | U8 | 录制粒度与轮转 | 建议：本地端按 topic 原样录制（R2CR v1），大小/时长轮转；待评审 |
 | U9 | 配置项范围 | 建议：`teleop.actions_topic/observations_topic/actions_rate_hz/timeout_ms` + `collection.record/output_dir`；待评审 |
 | U10 | 会话生命周期话题与门控 | **已定案（2026-11-05 反馈）**：新增 `teleop/start|pause|resume|finish|quit` 五话题；非数采（非 RUNNING）态不接收&执行 `teleop/actions`；状态机与采集耦合细节（§3.3.2）待评审 |
