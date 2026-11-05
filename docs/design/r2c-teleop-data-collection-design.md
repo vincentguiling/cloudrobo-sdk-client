@@ -198,7 +198,23 @@ RUNNING/PAUSED --quit--> IDLE（丢弃当前会话未落盘数据）
 
 - **门控规则（核心安全语义）**：仅 **RUNNING** 态下客户端接收&执行 `teleop/actions`；IDLE/PAUSED/FINISHING 态收到的遥操动作一律丢弃（计数并限频告警）。PAUSED 时策略动作也不执行（整体保持），避免"暂停遥操但策略继续动"的意外。
 - **与采集的耦合**：`start` 同时启动本地录制器（两话题）；`pause/resume` 在录制文件上打分段标记；`finish` 收尾落盘并生成 `meta.json`；`quit` 丢弃未完成数据。数采与遥操执行共用同一状态机，天然满足"不在数采状态下不接收&执行 teleop/actions"。
-- **消息形态**：生命周期话题 payload 为轻量事件帧（`{timestamp, session_id, operator}` JSON 或复用 `CommandMessage` proto），客户端不校验内容语义，收到即按话题名转移状态；幂等：重复/乱序事件按状态机合法性检查忽略。
+- **消息形态**：生命周期话题 payload 为轻量事件帧（`{timestamp, session_id, operator}` JSON 或复用 `CommandMessage` proto），客户端不校验内容语义，收到即按话题名转移状态；幂等：重复/乱序事件按状态机合法性检查忽略。建议用 proto 固化（只增不改）：
+
+```protobuf
+message TeleopControl {
+  string session_id = 1;       // start 生成，后续控制携带；不匹配则忽略
+  string source = 2;           // 触发源：local_pad / cloud / watchdog
+  int64  timestamp_us = 3;     // 乱序/过期控制按此校验
+  oneof payload {
+    Start   start   = 10;      // input_mode: isomorphic_arm | vr
+    Pause   pause   = 11;
+    Resume  resume  = 12;
+    Finish  finish  = 13;      // keep_recording: bool
+    Quit    quit    = 14;
+  }
+}
+```
+
 - **发布者**：操作台/云端控制台均可发布（权限由 Zenoh ACL 控制）；本地操作台"开始采集"按钮即发 `teleop/start`。
 - **超时兜底**：RUNNING 态下 `teleop/actions` 持续超时（如 5s 无消息）不改变会话状态（仍是遥操接管语义，回退策略由仲裁规则处理），仅 PAUSED/IDLE 才真正阻断遥操执行。
 
@@ -257,7 +273,7 @@ collection:                                          # 本地操作台侧录制�
 recordings/
 ├── teleop_actions/2026-11-05T10-00-00.r2cr
 ├── teleop_observations/2026-11-05T10-00-00.r2cr
-└── meta.json            # 可选：设备树快照、配置哈希、录制起止、publish_hz
+└── meta.json            # 可选：设备树快照、配置哈希、录制起止、publish_hz、会话记录（start/pause/resume/finish/quit 时刻、session_id、source、input_mode）
 ```
 
 - 文件内容沿用 **R2CR v1**（magic/version/frame_count/索引），帧为消息字节 + 时间戳；不引入新格式。
@@ -279,7 +295,8 @@ recordings/
 
 ## 5. 安全设计
 
-- 谁能发布 `teleop/actions` 由 **Zenoh ACL** 控制；建议策略与操作台使用不同凭证，操作台凭证才可写遥操话题；
+- 谁能发布 `teleop/actions` 与 `teleop/start` 等生命周期话题由 **Zenoh ACL** 控制；建议策略与操作台使用不同凭证，操作台凭证才可写遥操话题；
+- 会话门禁（仅 RUNNING 接收/执行遥操动作）保证非数采状态遥操动作不驱动设备；`start` 建议附加操作台侧确认（防误触发）；
 - 客户端保留限幅/限速；遥操使能（deadman）由操作台实现，客户端以超时即停兜底；
 - TLS/凭证沿用现有 bundle；
 - 录制文件路径限制在配置目录内；录制内容不含凭证。
