@@ -158,7 +158,7 @@ Endpoint：`benchmark.controller` 的 `describe`(Query) 与 `run`(Session)。
 
 - 旗舰仓库最后推送 2026-10-30；最新 release v1.1.1（2026-10-23）；公开 issue 10 个。
 - `adapter-robot-nexform-litearm` 于 2026-11-05（调研当日）仍有推送，说明适配器矩阵在持续扩张。
-- 外部 PR 活跃且有商业方参与：新增 Opper、Runcrate 等 OpenAI 兼容网关；Keenable 提交 web_search provider。这类"生态方主动适配"是项目有一定影响力的信号。
+- 外部 PR 活跃且出现商业方参与：Runcrate 提交 OpenAI 兼容网关、Keenable 提交 `web_search` provider（两者均带利益披露）；v1.1.1 自身新增了 Opper 网关。这类"生态方主动适配"是项目有一定影响力的信号。
 - 多语言策略明确：Python 为主，Rust 用于相机/USB 与高性能节点，C++ 覆盖 msgs/robot 以对接嵌入式与既有 C++ 栈。
 
 ---
@@ -183,7 +183,7 @@ RoboDojo：PAOS/DeepSeek 4.1 Flash + π0.5 26.70%、DM0.5 24.97%、PAOS/GPT-6 + 
 
 `benchmark-libero` 另给出历史结果：VLA-JEPA 在 `libero_spatial` 上 100 episodes 达 94%（rendering 256）/96%（rendering 224），对比 OpenVLA 84.7%。
 
-**判读建议**：PAOS 的增益主要来自"认知层 + 已有 VLA 策略"的组合（GPT-6/GLM/DeepSeek + π0.5），这与其"不做模型、做编排"的定位一致；但 token 成本高（LIBERO-Long 单任务 1.8–2.2M tokens，GUI 类 Agent 开销显著），且上述数字均未经第三方复现。文档本身把"可复现发布需要补充什么"列清楚了，这点是加分项。
+**判读建议**：PAOS 的增益主要来自"认知层 + 已有 VLA 策略"的组合（GPT-6/GLM/DeepSeek + π0.5），这与其"不做模型、做编排"的定位一致；但 token 成本高（LIBERO-Long 单任务 1.8–2.2M tokens，认知层多轮模型调用占大头），且上述数字均未经第三方复现。文档本身把"可复现发布需要补充什么"列清楚了，这点是加分项。
 
 ---
 
