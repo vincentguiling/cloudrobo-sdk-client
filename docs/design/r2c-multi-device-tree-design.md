@@ -1,4 +1,4 @@
-﻿# R2C 多设备管理（设备树）特性设计
+# R2C 多设备管理（设备树）特性设计
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"特性的功能设计；不属于本文件的内容：业界调研与代码完全调研见 `docs/research/`（`r2c-multi-device-industry-survey.md`、`cloudrobo-r2c-codebase-survey.md`），R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
@@ -337,9 +337,51 @@ robot_config
 | 嵌套 `devices` | 仅传输节点（实现了句柄工厂）可有 `devices:` 子列表；子设备 `name` 同样全局唯一 |
 | `channels` | 设备自声明通道；同一 transport 内 topic 冲突（同向重复）→ 加载失败报冲突双方 |
 | `input` | 历史/滤波等能力设备引用其他设备 `name`；存在性与无环检测 |
-| 容量上限 | `window_s × sample_hz ≤ 4096`，超出拒绝加载——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"` 静默，代码调研偏差 #6） |
-| `!include` | 加载预处理；相对当前文件解析、防环、路径限制在配置目录内（5 节） |
+| 容量上限 | `window_s × sample_hz ≤ 4096`，超出拒绝加载——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"` 静默，代码调研偏差 #6）。**用途：环形缓冲的内存护栏**——历史设备的缓冲常驻端侧内存，样本数 = 窗口秒数 × 采样率（2s×30Hz=60 样本 ≈ 3.4KB）；若误配 `window_s: 3600, sample_hz: 1000`（360 万样本，数百 MB）会在启动期被拒绝，而不是运行期内存溢出 |
+| `!include` | 加载预处理；相对当前文件解析、防环、路径限制在配置目录内（5 节）。**用途**：①防环——A include B、B include A 会无限递归；②路径沙箱——防止配置把引用指到配置目录外；③报错带完整文件路径，展开后统一校验 |
 | 映射归属 | 缺省全局（存量语义）；列表项内可写 `device_to_r2c`/`r2c_to_device` 覆盖该设备（可选增量） |
+
+**映射归属示例**（全局缺省 + 按设备覆盖）：
+
+```yaml
+schema_version: "v2.1"
+
+# 全局映射（存量语义不变）：凡未在设备项内覆盖映射的设备，都走这里
+device_to_r2c:
+  mappings:
+    - {target_key: "images.color.<cam>", source_path: "<cam>", transforms: ndarray_to_jpeg}
+r2c_to_device:
+  mappings: [...]
+
+hardware:
+  - name: ros
+    type: ros2
+    config: {node_name: r2c_ros}
+    devices:
+      - name: arm                     # 未写映射 → 使用上面全局 device_to_r2c（存量行为）
+        type: arm
+        config: {...}
+        channels: {...}
+
+      - name: gripper                 # 特殊设备：在项内覆盖自己的映射（仅对它生效）
+        type: gripper
+        config: {...}
+        channels: {...}
+        device_to_r2c:                # ← 覆盖：优先级高于全局；只影响 gripper
+          mappings:
+            - {target_key: "end_effector_states.position", source_path: gripper_pos}
+        r2c_to_device:
+          mappings:
+            - {target: gripper_pos, source: "end_effector_states.position"}
+
+  - name: camera1                      # 未写映射 → 全局
+    type: opencv_camera
+    config: {...}
+  - name: left_ft_hist                 # 能力设备无需映射（输出走 extensions）
+    type: history
+    input: left_ft
+    config: {window_s: 2.0}
+```
 
 **传输上下文 API**（设备面向上下文的接口，`IRobotHardwareAdapter` 的上下文实现提供）：
 
