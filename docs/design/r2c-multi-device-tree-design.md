@@ -15,7 +15,7 @@
 4. 采样频率与云端模型调用频率解耦，高频原始流不出端侧。
 
 **目标**：
-- `robot_config` 支持设备树定义：`hardware` 从单块扩展为列表（每项与现有结构一致），设备按 `type` 经 entry-point 解析实现，复用 YAML 原生锚点/合并键；
+- `robot_config` 支持设备树定义：`hardware` 从单块扩展为列表（项可嵌套 `devices` 体现层级），设备按 `type` 经 entry-point 解析实现，配置从配置文件夹按文件导入；
 - 设备级生命周期状态机与逐设备心跳健康；
 - 首批设备类型：本体/机械臂、末端/夹爪、OpenCV 相机、历史（history，预留 filter/tf）；
 - 历史等设备输出经 `Observations.extensions` 随唯一观测入口上行，云端不感知端侧实现细节。
@@ -93,7 +93,7 @@ opencv 相机 2
 | 设备通道声明（channels） | 设备在自己配置里声明所需 topic / 消息类型 / QoS（ROS）或串口帧格式等；由设备类型实现消费，传输上下文只负责按声明创建句柄 |
 | 设备（device） | 设备树的功能单元（本体、末端、相机、历史…）；`type` 经 `r2c_sdk.devices` entry-point 解析为具体实现；可绑定传输上下文（`transport`）或自带采集 |
 | 设备类型（device type） | entry-point 注册的设备实现名（如 `arm`、`gripper`、`opencv_camera`、`history`）；**历史/滤波/变换等都是设备类型**，不是特殊节点 |
-| YAML 原生引用 | 设备复用用锚点/别名/合并键（`&x`/`*x`/`<<:`）；文件拆分是可选的 `!include` 加载预处理，不属于 schema |
+| 文件导入 | 每个设备/传输一个文件放配置文件夹，主配置 `!include` 导入（相对当前文件解析）；文件内仍可用标准 YAML 锚点（可选，示例不使用） |
 | 环形缓冲（ring buffer） | 设备通用组件：按 `(设备, 通道)` 维度缓存最近 `ceil(window_s × sample_hz)` 个样本，溢出覆盖最旧 |
 | 样本（sample） | 一个时刻的设备读数：`timestamp` + 数据载荷（复用 `ExtensionValue` 自描述结构） |
 | 窗口批（window batch） | 历史设备注入 `Observations.extensions` 的扩展字段（键 `<设备名>.window`）：当前值快照 + 窗口内全部样本 + 起止时间戳 + 健康位 |
@@ -128,7 +128,7 @@ opencv 相机 2
 | 设备身份 | 设备 `name` 全局唯一 + `type` 经 entry-point 解析 | 对齐 Viam 资源 name / ros2_control 块名惯例；树负责"是谁、挂在哪"，引用负责"用谁" |
 | 设备发现 | 配置 `devices` 段显式声明（设备是一等对象）+ 设备类型 entry-point；仅对仍为"整机驱动"的存量适配器保留 `describe_devices()` 兼容兜底 | ros2 `get_transport_targets`、a1z `camera_meta` 是旧模型雏形；新模型下设备清单由配置决定，传输层不再推导 |
 | 能力复用 | 新 entry-point 组 `r2c_sdk.devices`：`history`/`filter`/`tf` 与 `arm`/`gripper`/`opencv_camera` 同为一等设备类型 | ros2_control controller chaining / YARP remapper 同构：能力是设备，不是设备变体 |
-| 配置组织 | 存量单 hardware 块零改动；多设备 = hardware 列表；复用用 YAML 原生锚点/合并键；文件拆分为可选 `!include` 预处理 | 用户只需学习增量；新旧配置可复用；现有 `_config_dir` 机制可承载 |
+| 配置组织 | 存量单 hardware 块零改动；多设备 = hardware 列表（嵌套 devices 体现树层级）；每个设备/传输一个文件，`!include` 导入 | 用户只需学习增量；树的层级由配置嵌套直观表达；现有 `_config_dir` 机制可承载 |
 | 设备输出承载 | `Observations.extensions` 约定键 `<设备名>.window`，载荷 BYTES（proto 序列化） | 现有 `map<string, ExtensionValue>` 机制零侵入；观测唯一入口（C5） |
 | 上行频率 | 观测上行 = 云端模型调用频率（0.5Hz）；采样按设备 `sample_hz` 独立节拍写环形缓冲 | 现状 sync_client 单节拍（控制=采样=发布）需拆为双节拍 |
 
@@ -195,11 +195,18 @@ sequenceDiagram
 | 规则 | 说明 |
 |------|------|
 | 存量零改动 | v2.1 配置（单 `hardware` 块）**原样可用、行为不变**——单块 = 单设备，即今天的行为 |
-| 增量一：`hardware` 可为列表 | 列表 = 多设备；**每个列表项的结构与现有 `hardware` 块完全一致**（`type`/`config`/`commands`），仅多一个可选 `name` |
+| 增量一：`hardware` 可为列表，且**列表项可嵌套 `devices`** | 树的层级直接由嵌套表达：传输节点下的 `devices:` 是挂在它下面的子设备（叶节点）；无 `transport`/嵌套的项是自带采集的叶节点 |
 | 增量二：新设备类型 | `type: history`（及后续 `filter`/`tf`）经 `r2c_sdk.devices` entry-point 注册，列表项加 `input` 引用即可 |
-| 设备复用 = YAML 原生引用 | 用 YAML 标准锚点/别名（`&x`/`*x`）与合并键（`<<:`）复用与微调设备定义——**这是 YAML 自带能力，不是新机制** |
-| 文件拆分 = 可选预处理 | YAML 无原生跨文件 include；提供加载前预处理（`!include` 标签）作为**可选项**，不使用时一切都在一个文件里；schema 与校验不感知该预处理 |
+| 设备复用 = 从配置文件夹导入 | 每个设备/传输一个文件放配置文件夹，主配置用 `!include` 导入（见示例）；**示例统一采用此写法**，不用锚点 |
 | 映射保持全局 | `device_to_r2c`/`r2c_to_device` 缺省仍是全局（存量语义）；需要按设备分组时才在列表项内覆盖 |
+
+**节点契约（成为 transport / 成为 input 各需提供什么）**：
+
+| 角色 | 成为该节点必须提供 | 说明 |
+|------|---------------------|------|
+| **传输节点（transport，可被别的节点挂靠）** | ① 上下文建立/释放：`connect()`/`disconnect()`（如创建 ROS 节点、打开串口总线）；② 句柄工厂：`create_subscription(ChannelSpec)` / `create_publisher(ChannelSpec)`——子设备声明什么 topic 就建什么句柄；③ `context_info()`（节点名/domain 等诊断信息）；④ QoS 默认值（子设备可覆盖）；⑤ 生命周期状态与恢复（基类默认实现） | **只提供"连接能力"，不提供业务语义**——它不知道挂的是机械臂还是夹爪；`type` 走现有 `r2c_sdk.adapters` 注册表（`ros2` 即是一个传输节点实现） |
+| **输入节点（input，可被历史/滤波引用）** | ① 数据输出：按声明 `sample_hz` 产出**带时间戳的样本**（进入 `Observations` 字段或 `extensions`）；② 通道声明：`channels`（它占用的 topic/键），供录制与 topic 冲突检测；③ 生命周期：ACTIVE/DEGRADED 状态与自动恢复（设备基类默认实现）；④ 元数据：`describe_devices()` 或由配置 `name/type/channels` 声明 | **提供"数据 + 健康"**：任何能持续产出带时间戳读数的设备（力传感器、关节、相机、历史设备）都可作为 `input`；`history` 设备本身也是合法的 `input`（可级联，需无环） |
+| **能力节点（history / 后续 filter、tf）** | ① `input` 引用（指向某个输入节点）；② 能力参数（如 `window_s`）；③ 输出写到约定位置（history → `extensions["<name>.window"]`） | 由 SDK 通用实现承载（环形缓冲/截窗），能力设备**零驱动代码** |
 
 **单设备（存量，零改动）**：
 
@@ -214,75 +221,124 @@ device_to_r2c: {...}
 r2c_to_device: {...}
 ```
 
-**多设备（增量写法）——场景 2 完整示例**（ROS 机械臂 + 夹爪共享 ROS 上下文、双 OpenCV 相机、力传感器 + 历史）：
+**多设备（增量写法）——场景 2 完整示例**（ROS 机械臂 + 夹爪共享 ROS 上下文、双 OpenCV 相机、力传感器 + 历史）。树形层级 = 配置嵌套：传输节点的 `devices:` 是它的子设备；示例统一用 `!include` 从配置文件夹导入文件：
+
+`robot_config.yaml`（整机入口）：
 
 ```yaml
 schema_version: "v2.1"                     # 版本号不变，schema 向后兼容
 runtime: {...}                             # 沿用
 translator: {type: configurable}           # 沿用（全局映射；按设备覆盖见下）
 
-hardware:                                  # 从单块扩展为列表；每项 = 现有 hardware 结构
-  - &ros_def                               # YAML 锚点：ROS 上下文定义一次
-    name: ros
-    type: ros2                             # 走现有 r2c_sdk.adapters 注册表（上下文角色）
-    config:
-      node_name: r2c_ros
-  - name: arm                              # 机械臂：引用上面的 ROS 上下文
-    type: arm                              # r2c_sdk.devices entry-point
-    transport: ros                         # 引用列表中 name: ros 的项
+hardware:                                  # 从单块扩展为列表；树的根层
+  - !include ./transports/ros.yaml         # 传输节点：内嵌 arm/gripper 两个子设备
+  - !include ./transports/serial_ft.yaml   # 传输节点：内嵌 left_ft 子设备
+  - !include ./devices/camera1.yaml        # 叶节点：自带采集
+  - !include ./devices/camera2.yaml
+  - !include ./devices/left_ft_hist.yaml   # 叶节点：历史（input → left_ft）
+```
+
+`transports/ros.yaml`（**传输节点 + 它的子设备树**）：
+
+```yaml
+name: ros
+type: ros2                       # 传输节点实现（r2c_sdk.adapters 注册表）
+config:
+  node_name: r2c_ros
+  qos_defaults: {reliability: reliable, depth: 10}   # 子设备可覆盖
+devices:                         # ← 树的层级：挂在本传输节点下的子设备
+  - name: arm                    # 机械臂
+    type: arm                    # r2c_sdk.devices entry-point
     config:
       joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
       sample_hz: 30
-      channels:                            # 设备自声明订阅/发布（传输上下文按此建句柄）
-        state:   {topic: /arm/joint_states,      msg_type: sensor_msgs/msg/JointState}
-        command: {topic: /arm/joint_command,     msg_type: sensor_msgs/msg/JointState}
-  - name: gripper                          # 夹爪：共享同一 ROS 上下文
+      channels:                  # 子设备自声明订阅/发布（传输节点按此建句柄）
+        state:   {topic: /arm/joint_states,  msg_type: sensor_msgs/msg/JointState}
+        command: {topic: /arm/joint_command, msg_type: sensor_msgs/msg/JointState}
+  - name: gripper                # 夹爪：与 arm 同一 ROS 上下文
     type: gripper
-    transport: ros
     config:
       sample_hz: 30
       channels:
-        state:   {topic: /gripper/gripper_state,    msg_type: sensor_msgs/msg/GripperState}
-        command: {topic: /gripper/gripper_command,  msg_type: sensor_msgs/msg/GripperCommand}
-  - &cam                                   # 相机定义一次（锚点）
-    name: camera1
-    type: opencv_camera                    # 自带采集，无 transport
-    config: {index_or_path: "/dev/video0", width: 640, height: 480, fps: 30, sample_hz: 30}
-  - <<: *cam                               # YAML 合并键：相机 2 只改差异字段
-    name: camera2
-    config: {index_or_path: "/dev/video2"}
-  - name: left_ft
-    type: force_torque
-    transport: serial_ft                   # 指向另一传输项（串口上下文，定义同 ros 形态）
-    config: {channel: wrench, sample_hz: 30}
-  - name: left_ft_hist                     # 历史设备：也是列表中普通一项
-    type: history                          # r2c_sdk.devices entry-point
-    input: left_ft                         # 引用另一设备（可跨 transport）
-    config: {window_s: 2.0}
+        state:   {topic: /gripper/gripper_state,   msg_type: sensor_msgs/msg/GripperState}
+        command: {topic: /gripper/gripper_command, msg_type: sensor_msgs/msg/GripperCommand}
 ```
+
+`transports/serial_ft.yaml`（串口传输节点 + 力传感器子设备）：
+
+```yaml
+name: serial_ft
+type: ft_serial
+config: {port: /dev/ttyUSB0, baudrate: 921600}
+devices:
+  - name: left_ft                # 力传感器（input 节点）
+    type: force_torque
+    config: {channel: wrench, sample_hz: 30}
+```
+
+`devices/camera1.yaml`（相机 1：自带采集，无需 transport，直接是根层叶节点）：
+
+```yaml
+name: camera1
+type: opencv_camera
+config: {index_or_path: "/dev/video0", width: 640, height: 480, fps: 30, sample_hz: 30}
+```
+
+`devices/camera2.yaml`（相机 2：同类型第二个实例，独立文件）：
+
+```yaml
+name: camera2
+type: opencv_camera
+config: {index_or_path: "/dev/video2", width: 640, height: 480, fps: 30, sample_hz: 30}
+```
+
+`devices/left_ft_hist.yaml`（历史设备：`input` 引用另一设备的 `name`）：
+
+```yaml
+name: left_ft_hist
+type: history               # r2c_sdk.devices entry-point（SDK 通用实现，零驱动代码）
+input: left_ft              # 引用任意输入节点的 name（可跨 transport；需无环）
+config: {window_s: 2.0}     # 窗口随观测上行，无独立发布频率
+```
+
+对应树形结构：
+
+```text
+robot_config
+├── ros (transport: ros2)
+│   ├── arm (device: arm)
+│   └── gripper (device: gripper)
+├── serial_ft (transport: ft_serial)
+│   └── left_ft (device: force_torque)  ──input──►  left_ft_hist
+├── camera1 (device: opencv_camera)
+├── camera2 (device: opencv_camera)
+└── left_ft_hist (capability: history)
+```
+
+**YAML 锚点说明**：锚点/合并键（`&x`/`*x`/`<<:`）是标准 YAML 能力，单文件内仍可使用；但**示例与推荐写法统一为文件导入**（`!include`），避免锚点跨设备误用。
 
 **与旧设计的对比（本版修订点）**：
 
 | 旧设计（v0.5） | 新设计（兼容优先） |
 |----------------|---------------------|
-| 新顶层 `adapters` + `devices` 段，schema_version 升 v3.0 | **不新增顶层段**：`hardware` 单块→列表，schema_version 不变 |
-| 用户需学习 `adapters`/`devices`/`transport`/`config_file` 一套新结构 | 用户只学两点：hardware 可为列表、新增设备类型；其余全部沿用 |
+| 新顶层 `adapters` + `devices` 段，schema_version 升 v3.0 | **不新增顶层段**：`hardware` 单块→列表（可嵌套 devices），schema_version 不变 |
+| 用户需学习 `adapters`/`devices`/`transport`/`config_file` 一套新结构 | 用户只学两点：hardware 可为列表（项可嵌套 devices）、新增设备类型；其余全部沿用 |
 | 存量配置需迁移改写 | 存量配置**原样运行**；新增设备只需在 `hardware` 列表追加项 |
-| 设备复用靠 `config_file` 文件引用机制 | 设备复用靠 **YAML 原生锚点/合并键**（无新机制）；文件拆分作为可选 `!include` 预处理保留 |
+| 设备复用靠 `config_file` 文件引用机制 | **每个设备一个文件放配置文件夹，`!include` 导入**；文件内仍可用 YAML 锚点（可选） |
 
-**文件拆分（可选预处理，非 schema）**：YAML 标准不含跨文件 include；如需拆分，提供加载前 `!include ./devices/camera2.yaml` 标签（相对当前文件目录，防环，展开后统一校验）。不使用该标签的配置完全是标准 YAML。存量为单文件；是否拆文件由用户自选，两种写法可混用。
+**文件导入规则（`!include`，加载预处理，非 schema）**：相对当前文件所在目录解析；支持嵌套导入（被导入文件内可再 `!include`）；导入链出现环 → 加载失败并报出完整链路；路径限制在配置目录内（5 节）；展开后统一做 schema 校验，错误信息带文件路径。不使用 `!include` 的配置完全是标准 YAML。
 
 **校验规则**：
 
 | 规则 | 说明 |
 |------|------|
 | `hardware` 单块 | 与 v2.1 完全一致（存量路径，不加载 DeviceManager） |
-| `hardware` 列表 | 每项 `type` 走 entry-point 注册表；`name` 列表内唯一；首项语义与单块一致 |
-| `transport` | 可选；指向列表中已定义项的 `name`（如 `ros`/`serial_ft`）；相机等自带采集不填 |
+| `hardware` 列表 | 每项 `type` 走 entry-point 注册表；`name` 全局唯一（含嵌套 devices）；根层项 = 树的一级节点 |
+| 嵌套 `devices` | 仅传输节点（实现了句柄工厂）可有 `devices:` 子列表；子设备 `name` 同样全局唯一 |
 | `channels` | 设备自声明通道；同一 transport 内 topic 冲突（同向重复）→ 加载失败报冲突双方 |
-| `input` | 历史等能力设备引用其他设备名；存在性与无环检测 |
+| `input` | 历史/滤波等能力设备引用其他设备 `name`；存在性与无环检测 |
 | 容量上限 | `window_s × sample_hz ≤ 4096`，超出拒绝加载——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"` 静默，代码调研偏差 #6） |
-| `!include` | 可选预处理；相对当前文件解析、防环、路径限制在配置目录内（5 节） |
+| `!include` | 加载预处理；相对当前文件解析、防环、路径限制在配置目录内（5 节） |
 | 映射归属 | 缺省全局（存量语义）；列表项内可写 `device_to_r2c`/`r2c_to_device` 覆盖该设备（可选增量） |
 
 **传输上下文 API**（设备面向上下文的接口，`IRobotHardwareAdapter` 的上下文实现提供）：
@@ -386,6 +442,7 @@ extensions["<设备名>.window"] = ExtensionValue{
 | D5 | 设备输出 health 与 Heartbeat 的分工 | 设备输出只描述本设备，整机以 Heartbeat 为准 |
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
 | D7 | 设备输出承载方式 | **已定案**：不新起 topic，观测唯一入口，extensions 承载，云端不感知端侧实现 |
-| D8 | 配置引用机制 | **修订（2026-11-05）**：兼容优先——不新增顶层段，`hardware` 单块→列表（每项与 v2.1 结构一致）；复用用 YAML 原生锚点/合并键；`!include` 文件预处理仅作可选项（路径沙箱：配置目录内） |
+| D8 | 配置引用机制 | **修订（2026-11-05 二次）**：兼容优先——不新增顶层段，`hardware` 单块→列表（项可嵌套 devices 体现树层级）；示例统一为配置文件夹 + `!include` 文件导入（锚点仅单文件内可选）；路径沙箱：配置目录内 |
 | D9 | 传输上下文与设备的职责边界 | **已定案（2026-11-05）**：上下文只提供节点/连接与建订阅/发布句柄（`create_subscription`/`create_publisher`），**topic 与消息类型由设备配置声明**；适配器不感知设备语义 |
+
 
