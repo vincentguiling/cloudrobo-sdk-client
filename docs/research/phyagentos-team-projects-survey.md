@@ -82,7 +82,7 @@
 | 支撑 | PhyAgentOS-website | TypeScript | 官网（React + Vite） |
 | | PhyAgentOS-legacy | Python | 旧实现，从 legacy 分支抽出并保留完整 git 历史 |
 
-> 说明：除 `PhyAgentOS-core`（★2992）外，其余仓库 star 基本为 0–2，属**配套件而非独立项目**；fork 集中在 core（135）。`PhyAgentOS-legacy` 的存在说明核心在 v0.2 之后经历过一次重写（对应 PR "rebuild Core runtime, CLI and Forge integration"）。
+> 说明：除 `PhyAgentOS-core`（★2992）外，其余仓库 star 基本为 0–2，属**配套件而非独立项目**；fork 集中在 core（135）。`PhyAgentOS-legacy` 把旧实现连同完整 git 历史单独抽出，说明核心经历过一次重写（另有一个仍为 open 状态的 "rebuild Core runtime, CLI and Forge integration" PR）。
 
 ---
 
