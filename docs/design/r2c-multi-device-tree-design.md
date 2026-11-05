@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"特性的功能设计；不属于本文件的内容：业界调研与代码完全调研见 `docs/research/`（`r2c-multi-device-industry-survey.md`、`cloudrobo-r2c-codebase-survey.md`），R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
-> 状态：**v0.4，待评审**。本版修订：①补充场景 2（ROS 机械臂+夹爪、双 OpenCV 相机）完整配置示例；②支持设备级独立配置文件 + 相对路径引用；③移除派生节点概念——历史/滤波等能力改为 entry-point 注册的普通设备类型。按特性设计模板组织（特性概述 / 需求分析〔需求背景、场景分析、友商分析、名词解释〕/ 功能方案〔功能约束与依赖、整体方案设计、详细功能设计〕/ 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）。
+> 状态：**v0.5，待评审**。本版修订：ROS 等传输适配器**只管上下文**（节点、连接、QoS 默认值），**设备自己声明并实现要订阅/发布什么**；场景 2 示例按此调整。前版修订：①补充场景 2 完整配置示例；②支持设备级独立配置文件 + 相对路径引用；③移除派生节点概念——历史/滤波等能力改为 entry-point 注册的普通设备类型。按特性设计模板组织（特性概述 / 需求分析〔需求背景、场景分析、友商分析、名词解释〕/ 功能方案〔功能约束与依赖、整体方案设计、详细功能设计〕/ 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）。
 
 ## 1. 特性概述
 
@@ -52,7 +52,7 @@ opencv 相机 1
 opencv 相机 2
 ```
 
-要点：第一层是**传输上下文**（"ros:" 是一个 ROS 上下文，臂与夹爪共享它），相机自带采集、与 ROS 无关，且两个相机是同一设备类型的两个实例。→ 由 adapters（传输）+ devices（设备类型 + 独立配置文件）覆盖，完整示例见 3.3.2。
+要点：第一层是**传输上下文**（"ros:" 只是一个 ROS 上下文/节点，臂与夹爪共享它；**上下文不含任何 topic 绑定**），每个设备在自己的配置里声明订阅/发布的 topic 与消息类型；相机自带采集、与 ROS 无关，且两个相机是同一设备类型的两个实例。→ 由 adapters（传输上下文）+ devices（设备类型 + 设备自声明通道 + 独立配置文件）覆盖，完整示例见 3.3.2。
 
 **场景 3：多本体。** 多台整机各自一个 `device_id` 会话，云端按设备编排与汇聚（本版本不承诺云端实时协同）。
 
@@ -61,7 +61,7 @@ opencv 相机 2
 | 需求点 | 现状 | 本特性 |
 |--------|------|--------|
 | 设备身份（独立命名/类型） | ✗（键前缀约定） | ✔ devices 声明 + entry-point 类型 |
-| 共享传输（多设备一个上下文） | 内部隐式 | ✔ transport 引用同一 adapter |
+| 共享传输（多设备一个上下文） | 内部隐式 | ✔ 多设备引用同一 transport 上下文 |
 | 同型多实例（两台相机） | 内部隐式 | ✔ 两个 device 实例 |
 | 异构传输并存（ROS + OpenCV） | 分散在各 adapter | ✔ 设备各自绑定/自带传输 |
 | 独立故障隔离 | 整机级 | ✔ 单设备 DEGRADED |
@@ -89,7 +89,8 @@ opencv 相机 2
 | 术语 | 定义 |
 |------|------|
 | 设备树 | `robot_config` 中 adapters（传输上下文）+ devices（设备）+ 引用关系（transport / input）构成的关系图；浅层级 + 引用，不做深内嵌 |
-| 传输上下文（adapter） | 一个共享的通信/驱动上下文（一个 ROS 上下文、一个串口总线、一路相机采集），走现有 `r2c_sdk.adapters` 注册表；多个设备可引用同一上下文 |
+| 传输上下文（adapter） | 一个共享的通信/驱动上下文（一个 ROS 上下文与节点、一个串口总线、一路相机采集），走现有 `r2c_sdk.adapters` 注册表；**只提供上下文与连接能力（建订阅/建发布），不绑定具体 topic**；多个设备可引用同一上下文 |
+| 设备通道声明（channels） | 设备在自己配置里声明所需 topic / 消息类型 / QoS（ROS）或串口帧格式等；由设备类型实现消费，传输上下文只负责按声明创建句柄 |
 | 设备（device） | 设备树的功能单元（本体、末端、相机、历史…）；`type` 经 `r2c_sdk.devices` entry-point 解析为具体实现；可绑定传输上下文（`transport`）或自带采集 |
 | 设备类型（device type） | entry-point 注册的设备实现名（如 `arm`、`gripper`、`opencv_camera`、`history`）；**历史/滤波/变换等都是设备类型**，不是特殊节点 |
 | 配置引用（config_file） | 设备/传输配置可写到独立文件，通过相对路径引用引入；路径相对引用方文件所在目录解析 |
@@ -122,9 +123,10 @@ opencv 相机 2
 
 | 选型点 | 决策 | 依据 |
 |--------|------|------|
-| 组合层级 | adapters（传输上下文）+ devices（设备，可引用 transport）+ 设备间引用（`input`） | 与"一个 adapter = 一个上下文"的代码现状同构（ros2 adapter 持有 ROS 上下文）；同一 ROS 上下文下臂与夹爪是两个设备；相机自带采集不与 ROS 绑定 |
+| 组合层级 | adapters（传输上下文：只管节点/连接）+ devices（设备，自声明通道 + 可引用 transport）+ 设备间引用（`input`） | 与"一个 adapter = 一个上下文"的代码现状同构（ros2 adapter 持有 ROS 上下文）；设备各自声明订阅/发布，避免传输层与设备语义耦合；相机自带采集不与 ROS 绑定 |
+| 传输上下文边界 | 上下文只做：节点/会话建立、按声明创建订阅与发布句柄、QoS 默认值；**订阅/发布的 topic 与消息类型由设备配置决定** | 同一 ROS 上下文可服务任意设备组合；新增设备不改传输配置；与"设备自治"一致 |
 | 设备身份 | 设备 `name` 全局唯一 + `type` 经 entry-point 解析 | 对齐 Viam 资源 name / ros2_control 块名惯例；树负责"是谁、挂在哪"，引用负责"用谁" |
-| 设备发现 | `describe_devices()` 元数据 API 自动推导 + 配置覆盖 | ros2 `get_transport_targets`、a1z `camera_meta`、命令注册表均为现有雏形 |
+| 设备发现 | 配置 `devices` 段显式声明（设备是一等对象）+ 设备类型 entry-point；仅对仍为"整机驱动"的存量适配器保留 `describe_devices()` 兼容兜底 | ros2 `get_transport_targets`、a1z `camera_meta` 是旧模型雏形；新模型下设备清单由配置决定，传输层不再推导 |
 | 能力复用 | 新 entry-point 组 `r2c_sdk.devices`：`history`/`filter`/`tf` 与 `arm`/`gripper`/`opencv_camera` 同为一等设备类型 | ros2_control controller chaining / YARP remapper 同构：能力是设备，不是设备变体 |
 | 配置组织 | 支持设备/传输级独立配置文件，通过 `config_file` 相对路径引用；展开后统一校验 | 设备和传输各自演进、复用（同一相机配置可用于多台整机）；现有 `_config_dir` 机制可承载 |
 | 设备输出承载 | `Observations.extensions` 约定键 `<设备名>.window`，载荷 BYTES（proto 序列化） | 现有 `map<string, ExtensionValue>` 机制零侵入；观测唯一入口（C5） |
@@ -137,9 +139,11 @@ robot_config (v3.0: adapters 传输上下文 + devices 设备 + 引用)
   │
   ▼
 DeviceManager（每 R2CClient 一个）
-  ├── transport: ros (ros2)                        # 一个 ROS 上下文，被多个设备共享
+  ├── transport: ros (ros2)                        # 仅 ROS 上下文/节点，不含 topic 绑定
   │     ├── device: arm      (type: arm)     ──30Hz──► RingBuffer(arm)
+  │     │      └ 设备自声明: /arm/joint_states(订阅) /arm/joint_command(发布)
   │     └── device: gripper  (type: gripper) ──30Hz──► RingBuffer(gripper)
+  │            └ 设备自声明: /gripper/gripper_state(订阅) /gripper/gripper_command(发布)
   ├── device: camera1 (type: opencv_camera, 自带采集) ──30Hz──► RingBuffer(camera1)
   ├── device: camera2 (type: opencv_camera, 自带采集) ──30Hz──► RingBuffer(camera2)
   ├── device: left_ft (type: force_torque)          ──30Hz──► RingBuffer(left_ft)
@@ -179,7 +183,7 @@ sequenceDiagram
 
 #### 3.3.1 功能原理
 
-- **装载**：`DeviceManager` 读取 `adapters`（实例化传输上下文，复用现有 AdapterRegistry）与 `devices`（按 `type` 从 `r2c_sdk.devices` 解析实现并构造）；设备通过 `transport` 绑定传输上下文，或自带采集（如相机）。
+- **装载**：`DeviceManager` 读取 `adapters`（实例化传输上下文：节点/会话/连接，复用现有 AdapterRegistry）与 `devices`（按 `type` 从 `r2c_sdk.devices` 解析实现并构造，注入其引用的传输上下文）；**设备实现按自身配置声明的通道创建订阅/发布**（传输上下文只提供建句柄能力）；相机等自带采集的设备不引用传输上下文。
 - **双节拍**：采样节拍按设备 `sample_hz` 拉取数据写环形缓冲；上行节拍按模型调用频率组装 Observations（常规字段 + 各设备输出注入的 extensions），经现有会话发布。现状 sync_client 的单节拍循环拆分为两节拍。
 - **生命周期**：借鉴 ros2_control 组件状态机——设备 `UNCONFIGURED → INACTIVE → ACTIVE`；`input` 引用设备（如历史设备依赖力传感器）在其输入设备 ACTIVE 后激活；单设备 ERROR 仅影响依赖它的设备（转 DEGRADED），其他设备不受影响。
 - **故障隔离**：单设备离线不拖垮整机；断线资源"标记不可用而非消失"（对齐 Viam 语义），恢复后自动回归。
@@ -223,43 +227,51 @@ devices:
   - config_file: ./devices/camera2.yaml
 ```
 
-`adapters/ros.yaml`（共享 ROS 上下文）：
+`adapters/ros.yaml`（**只是 ROS 上下文/节点**，不声明任何 topic）：
 
 ```yaml
 name: ros
 type: ros2
 config:
-  subscriptions:
-    - {topic: /arm/joint_states,     msg_type: sensor_msgs/msg/JointState, store_as: arm_joint_states}
-    - {topic: /gripper/gripper_state, msg_type: sensor_msgs/msg/GripperState, store_as: gripper_state}
-  publishers:
-    - {topic: /arm/joint_command,    msg_type: sensor_msgs/msg/JointState}
-    - {topic: /gripper/gripper_command, msg_type: sensor_msgs/msg/GripperCommand}
+  node_name: r2c_ros                 # 共享节点名（设备在该上下文内建订阅/发布）
+  domain_id: 0                       # 可选
+  qos_defaults: {reliability: reliable, depth: 10}   # 可选，设备可覆盖
 ```
 
-`devices/arm.yaml`：
+`devices/arm.yaml`（机械臂：**自己声明订阅/发布的 topic**）：
 
 ```yaml
 name: arm
 type: arm                    # entry-point: r2c_sdk.devices → 机械臂设备实现
-transport: ros               # 引用 adapters 中的传输上下文
+transport: ros               # 引用 adapters 中的 ROS 上下文
 config:
   joint_names: [joint_1, joint_2, joint_3, joint_4, joint_5, joint_6]
-  state_key: arm_joint_states
-  command_key: arm_joint_command
   sample_hz: 30
+  channels:                  # 设备自声明的通道（传输上下文按此建句柄）
+    state:
+      topic: /arm/joint_states
+      msg_type: sensor_msgs/msg/JointState
+      qos: {reliability: reliable, depth: 1}
+    command:
+      topic: /arm/joint_command
+      msg_type: sensor_msgs/msg/JointState
 ```
 
-`devices/gripper.yaml`：
+`devices/gripper.yaml`（夹爪：与 arm 共享同一 ROS 上下文，topic 自声明）：
 
 ```yaml
 name: gripper
 type: gripper
-transport: ros               # 与 arm 共享同一个 ROS 上下文
+transport: ros               # 与 arm 共享同一个 ROS 上下文（节点）
 config:
-  state_key: gripper_state
-  command_key: gripper_command
   sample_hz: 30
+  channels:
+    state:
+      topic: /gripper/gripper_state
+      msg_type: sensor_msgs/msg/GripperState
+    command:
+      topic: /gripper/gripper_command
+      msg_type: sensor_msgs/msg/GripperCommand
 ```
 
 `devices/camera1.yaml`（相机 1，自带 OpenCV 采集，不依赖 ROS）：
@@ -325,14 +337,25 @@ config:
 
 | 规则 | 说明 |
 |------|------|
-| `adapters.<name>.type` | 走现有 `r2c_sdk.adapters` entry-point 注册表；一个 adapter = 一个传输上下文 |
+| `adapters.<name>.type` | 走现有 `r2c_sdk.adapters` entry-point 注册表；一个 adapter = 一个传输上下文（节点/会话/连接），**不声明 topic** |
 | `devices.<name>.type` | 走新增 `r2c_sdk.devices` entry-point 注册表；设备名全局唯一 |
 | `devices.<name>.transport` | 可选；必须指向已定义 adapter；相机等自带采集的设备不填 |
+| `devices.<name>.channels` | 设备自声明的通道（topic / 消息类型 / QoS 等），由设备实现消费；同一 transport 内 topic 冲突（两个设备声明同一 topic 且同为订阅或发布）→ 加载失败并报冲突双方 |
 | `devices.<name>.input` | 可选；引用其他设备名（可跨 transport），用于历史/滤波/变换类设备；加载时做存在性与无环检测 |
 | 容量上限 | `window_s × sample_hz ≤ 4096`，超出拒绝加载——需在 `robot_config_schema` 显式新增校验（现状 pydantic `extra="allow"` 对未知字段静默，代码调研偏差 #6） |
 | 兼容 | 配置无 `devices`/`adapters` 块时，完全沿用 v2.1 单 `hardware` 块行为，不加载 DeviceManager |
 
-**元数据 API**：`IRobotHardwareAdapter` 增加可选覆盖 `describe_devices() -> list[DeviceDeclaration]`（`name/type/channels`），默认返回空（由配置声明兜底）；ros2 适配器从 `SubscriptionConfig.store_as` 前缀推导。
+**传输上下文 API**（设备面向上下文的接口，`IRobotHardwareAdapter` 的上下文实现提供）：
+
+| 能力 | 签名（示意） | 说明 |
+|------|--------------|------|
+| 建订阅 | `create_subscription(spec: ChannelSpec) -> SubscriptionHandle` | 按设备声明的 topic/消息类型/QoS 建订阅；重复 topic 复用同一句柄 |
+| 建发布 | `create_publisher(spec: ChannelSpec) -> PublisherHandle` | 同上，用于命令下发 |
+| 上下文信息 | `context_info() -> {node_name, domain_id, ...}` | 供设备诊断与日志 |
+
+即：**传输层提供能力，设备层提供语义**——适配器不知道"机械臂"或"夹爪"，只按 `ChannelSpec` 建句柄；设备实现决定订阅什么、如何解析、如何发布。
+
+**元数据 API**：`IRobotHardwareAdapter` 增加可选覆盖 `describe_devices() -> list[DeviceDeclaration]`（`name/type/channels`），默认返回空（由配置声明兜底）；ros2 适配器仅返回上下文信息，设备清单由配置声明。
 
 **消息接口**：观测唯一入口不变；extensions 约定键见 3.3.3；proto 只增不改。
 
@@ -408,14 +431,15 @@ extensions["<设备名>.window"] = ExtensionValue{
 3. 常规 Observations 内多设备 `joint_states` 分组消息（`end_effector_poses` map 模式推广到关节面）；
 4. 运行中热更新设备树与配置文件重载（对标 Viam 热加载）；
 5. 多机运维可视面（多机连接、批量部署、告警）；
-6. 存量 16 个 adapter 分批补 `describe_devices()`（ros2/lerobot 优先，其余先回退配置声明 channels）；新增 `opencv_camera`、`history` 设备类型实现；
-7. rmw_zenoh liveliness 上下线事件替代心跳轮询（长期演进）。
+6. 存量 16 个 adapter 中，非 ROS 类（lerobot/ur5e/flexiv 等）仍是"整机驱动"，需按本设计拆成"上下文 + 设备类型"两段（ros2 适配器改为纯上下文，先做）；新增 `opencv_camera`、`history` 设备类型实现；
+7. 设备侧 topic 声明与 ros2 `SubscriptionConfig` 现有字段（含 `transforms`/`max_update_hz`）的对齐细则；
+8. rmw_zenoh liveliness 上下线事件替代心跳轮询（长期演进）。
 
 ## 10. 决策点汇总
 
 | # | 决策点 | 状态 / 建议 |
 |---|--------|-------------|
-| D1 | 组合层级 | **已定案**：adapters（传输上下文）+ devices（设备类型 + transport/input 引用）；不采用显式 parent 深层级 |
+| D1 | 组合层级 | **已定案**：adapters（传输上下文：只管节点/连接）+ devices（设备类型 + 自声明 channels + transport/input 引用）；不采用显式 parent 深层级 |
 | D2 | Heartbeat 增加逐设备健康列表 | 采纳（proto 只增） |
 | D3 | 观测上行频率 | **修订**：对齐云端模型调用频率（0.5Hz）；sync_client 拆采样/上行双节拍 |
 | D4 | extensions 载荷格式 | BYTES 承载 `ObservationWindow` proto 序列化；备选：拆 data/ts 两个张量字段（待评审） |
@@ -423,3 +447,4 @@ extensions["<设备名>.window"] = ExtensionValue{
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
 | D7 | 设备输出承载方式 | **已定案**：不新起 topic，观测唯一入口，extensions 承载，云端不感知端侧实现 |
 | D8 | 配置引用机制 | 采纳 `config_file` 相对引用（相对引用方目录、可嵌套、防环、展开后统一校验）；待评审确认路径沙箱范围（5 节：限制在配置目录内） |
+| D9 | 传输上下文与设备的职责边界 | **已定案（2026-11-05）**：上下文只提供节点/连接与建订阅/发布句柄（`create_subscription`/`create_publisher`），**topic 与消息类型由设备配置声明**；适配器不感知设备语义 |
