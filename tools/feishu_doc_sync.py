@@ -4,7 +4,8 @@
 
 用法（在仓库任意 worktree 根目录执行，或传绝对路径）：
   python tools/feishu_doc_sync.py check                      # 体检：登记表/重复副本/标题一致性
-  python tools/feishu_doc_sync.py sync --path <md 路径>       # 就地更新（无登记则按标题认领，认领不到才新建）
+  python tools/feishu_doc_sync.py sync --path <md 路径>       # 就地更新（默认拒绝新建，防重复副本）
+  python tools/feishu_doc_sync.py sync --path <md> --allow-create  # 确认是全新文档才新建并登记
   python tools/feishu_doc_sync.py sync --path <md> --dry-run  # 只打印计划，不落盘
   python tools/feishu_doc_sync.py sync --path <md> --force    # 允许覆盖时丢弃文档内嵌媒体（默认拒绝）
 
@@ -81,7 +82,8 @@ def lark(args, allow_failure=False):
 def load_registry():
     if not REGISTRY_PATH.exists():
         raise LarkError(f"登记表不存在：{REGISTRY_PATH}")
-    return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
+    # utf-8-sig：容忍外部编辑器写入的 BOM
+    return json.loads(REGISTRY_PATH.read_text(encoding="utf-8-sig"))
 
 
 def save_registry(reg):
@@ -175,8 +177,9 @@ def ensure_permissions(token, title, reg, dry):
         return
     TMP_PERM.write_text('{"link_share_entity":"tenant_readable","external_access":false}', encoding="utf-8")
     try:
+        # --yes：新建文档按仓库约定统一 tenant_readable，权限形态已由仓库约定确认（见 AGENTS.md 第 5 条）
         data = lark(["drive", "permission.public", "patch", "--token", token, "--type", "docx",
-                     "--data", f"@./{TMP_PERM.name}"], allow_failure=True)
+                     "--data", f"@./{TMP_PERM.name}", "--yes"], allow_failure=True)
         if data is not None and data.get("ok"):
             out(f"[PERM] «{title}»：链接共享 tenant_readable")
         else:
@@ -227,6 +230,11 @@ def cmd_sync(args):
             action = "adopt"
             out(f"[ADOPT] 认领既有文档 {token}（{where}）并写入登记表")
         else:
+            if not args.allow_create:
+                fail("未登记且飞书可见范围（canonical 文件夹/我的空间根）内无同题文档。"
+                     "应用/群空间的既有文档按标题扫不到——先核对 docs/feishu-docs.json 是否丢了条目；"
+                     "确认是全新文档才加 --allow-create 新建。")
+                return
             if dry:
                 out(f"[DRY] 将在「{reg['folder_name']}」新建文档«{title}»并登记")
                 return
@@ -251,6 +259,17 @@ def cmd_sync(args):
         remote = (fetched["data"].get("document") or {}).get("content") or ""
         media_count = len(re.findall(r"<figure", remote))
         if media_count > 0 and not args.force:
+            if action == "adopt":
+                entry = reg["docs"].get(doc["key"]) or {}
+                entry.update({"title": title, "doc_token": token,
+                              "url": f"https://my.feishu.cn/docx/{token}",
+                              "registered_at": entry.get("registered_at") or datetime.date.today().isoformat()})
+                entry.setdefault("last_synced", None)
+                entry.setdefault("last_synced_sha256", None)
+                entry.setdefault("note", None)
+                reg["docs"][doc["key"]] = entry
+                save_registry(reg)
+                out(f"[ADOPT] 已先登记 {token}（未更新内容：媒体守卫拦截）")
             fail(f"飞书文档含 {media_count} 个内嵌媒体块，overwrite 会丢失它们。"
                  f"先同步文字再用 `lark-cli docs +media-insert` 重嵌，或确认丢弃后加 --force。")
             return
@@ -331,6 +350,8 @@ def main():
     sub.add_parser("check", help="体检登记表与飞书重复副本")
     p_sync = sub.add_parser("sync", help="同步一份本地 Markdown 到飞书（就地更新）")
     p_sync.add_argument("--path", required=True, help="本地 Markdown 路径（相对仓库根或绝对路径）")
+    p_sync.add_argument("--allow-create", action="store_true",
+                        help="确认是全新文档时才允许新建（默认拒绝新建，防重复副本）")
     p_sync.add_argument("--force", action="store_true", help="允许覆盖时丢弃飞书文档内嵌媒体")
     p_sync.add_argument("--dry-run", action="store_true", help="只打印计划，不落盘")
     args = parser.parse_args()
