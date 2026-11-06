@@ -1,38 +1,29 @@
 {
-  "comment": "本地文档 → 飞书文档 的固定映射（防止重复建副本）。由 tools/feishu_doc_sync.py 读取与回写；手工登记新条目时至少填 title 与 doc_token。key 为仓库相对路径（正斜杠）。",
+  "comment": "???? ? ???? ???????????????? tools/feishu_doc_sync.py ????????????????? title ? doc_token?key ?????????????",
   "folder_token": "Dl3sfLpSGlQjfxd31oScQJkKnse",
-  "folder_name": "CloudRobo 调研与设计",
+  "folder_name": "CloudRobo ?????",
   "chat_id": "oc_9193635ab43cf0c028434d11558ff25f",
   "docs": {
-    "docs/design/r2c-multi-device-tree-design.md": {
-      "title": "R2C 多设备管理（设备树）特性设计",
-      "doc_token": "QLv9deiZIo0z0UxHtG9cpi8EnVE",
-      "url": "https://my.feishu.cn/docx/QLv9deiZIo0z0UxHtG9cpi8EnVE",
-      "registered_at": "2026-11-06",
-      "last_synced": "2026-11-06T11:18:24+08:00",
-      "last_synced_sha256": "698c05ff50699759a023087f3185b8b613502d0f4e5260150c3df555e7f394c6",
-      "note": "同题旧副本 BvZtdoODWoUjtQxgkYOccxbznkf（空白）已删除；位于应用空间 move 不可用，勿删本条目"
-    },
     "docs/design/r2c-teleop-data-collection-design.md": {
-      "title": "R2C 遥操与数据采集特性设计",
+      "title": "R2C ???????????",
       "doc_token": "EAFadWvHeoSAwWxllMLcsVx3nsh",
       "url": "https://my.feishu.cn/docx/EAFadWvHeoSAwWxllMLcsVx3nsh",
       "registered_at": "2026-11-06",
       "last_synced": null,
       "last_synced_sha256": null,
-      "note": "飞书文档内嵌讲解视频（r2c-teleop-explainer.mp4），sync 走 media 守卫；同题空白副本 TGebdEU3jotWaFxfnImcQeUFn2g、FOxzdxf6woSlcVxmhJUc1Q0Hnjc 已删除，v0.8 旧副本 R7jmddpQOosad1x7zMKcx8GHnse 已改名「（旧副本 20261106）」；位于应用空间，勿删本条目"
+      "note": "???????????r2c-teleop-explainer.mp4??sync ? media ????????? TGebdEU3jotWaFxfnImcQeUFn2g?FOxzdxf6woSlcVxmhJUc1Q0Hnjc ????v0.8 ??? R7jmddpQOosad1x7zMKcx8GHnse ???????? 20261106???????????????"
     },
     "docs/design/r2c-dora-capability-design.md": {
-      "title": "R2C 数据流编排与零拷贝特性设计（DORA 对齐）",
+      "title": "R2C ??????????????DORA ???",
       "doc_token": "LKtJdd6QYoayJJxjtyOcwJZSn8f",
       "url": "https://my.feishu.cn/docx/LKtJdd6QYoayJJxjtyOcwJZSn8f",
       "registered_at": "2026-11-06",
       "last_synced": null,
       "last_synced_sha256": null,
-      "note": "已归入「CloudRobo 调研与设计」文件夹"
+      "note": "????CloudRobo ?????????"
     },
     "docs/research/r2c-vs-dora-middleware-comparison.md": {
-      "title": "R2C 与 DORA 中间件对比",
+      "title": "R2C ? DORA ?????",
       "doc_token": "WPTRdWMPgoJkXKxdVGicFOkdn7d",
       "url": "https://my.feishu.cn/docx/WPTRdWMPgoJkXKxdVGicFOkdn7d",
       "registered_at": "2026-11-06",
@@ -41,13 +32,22 @@
       "note": null
     },
     "docs/research/phyagentos-team-projects-survey.md": {
-      "title": "PhyAgentOS 团队项目调研",
+      "title": "PhyAgentOS ??????",
       "doc_token": "YfI1dG92JoaDpJxyeDOco7dynqh",
       "url": "https://my.feishu.cn/docx/YfI1dG92JoaDpJxyeDOco7dynqh",
       "registered_at": "2026-11-06",
       "last_synced": null,
       "last_synced_sha256": null,
       "note": null
+    },
+    "docs/design/r2c-multi-device-tree-design.md": {
+      "title": "R2C 多设备管理（设备树）特性设计",
+      "doc_token": "QLv9deiZIo0z0UxHtG9cpi8EnVE",
+      "url": "https://my.feishu.cn/docx/QLv9deiZIo0z0UxHtG9cpi8EnVE",
+      "registered_at": "2026-11-06",
+      "last_synced": "2026-11-06T11:28:23+08:00",
+      "last_synced_sha256": "698c05ff50699759a023087f3185b8b613502d0f4e5260150c3df555e7f394c6",
+      "note": "同题旧副本 BvZtdoODWoUjtQxgkYOccxbznkf（空白）已删除；位于应用空间 move 不可用，勿删本条目"
     }
   }
 }
