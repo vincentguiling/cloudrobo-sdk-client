@@ -1,0 +1,53 @@
+{
+  "comment": "???? ? ???? ???????????????? tools/feishu_doc_sync.py ????????????????? title ? doc_token?key ?????????????",
+  "folder_token": "Dl3sfLpSGlQjfxd31oScQJkKnse",
+  "folder_name": "CloudRobo ?????",
+  "chat_id": "oc_9193635ab43cf0c028434d11558ff25f",
+  "docs": {
+    "docs/design/r2c-teleop-data-collection-design.md": {
+      "title": "R2C ???????????",
+      "doc_token": "EAFadWvHeoSAwWxllMLcsVx3nsh",
+      "url": "https://my.feishu.cn/docx/EAFadWvHeoSAwWxllMLcsVx3nsh",
+      "registered_at": "2026-11-06",
+      "last_synced": null,
+      "last_synced_sha256": null,
+      "note": "???????????r2c-teleop-explainer.mp4??sync ? media ????????? TGebdEU3jotWaFxfnImcQeUFn2g?FOxzdxf6woSlcVxmhJUc1Q0Hnjc ????v0.8 ??? R7jmddpQOosad1x7zMKcx8GHnse ???????? 20261106???????????????"
+    },
+    "docs/design/r2c-dora-capability-design.md": {
+      "title": "R2C ??????????????DORA ???",
+      "doc_token": "LKtJdd6QYoayJJxjtyOcwJZSn8f",
+      "url": "https://my.feishu.cn/docx/LKtJdd6QYoayJJxjtyOcwJZSn8f",
+      "registered_at": "2026-11-06",
+      "last_synced": null,
+      "last_synced_sha256": null,
+      "note": "????CloudRobo ?????????"
+    },
+    "docs/research/r2c-vs-dora-middleware-comparison.md": {
+      "title": "R2C ? DORA ?????",
+      "doc_token": "WPTRdWMPgoJkXKxdVGicFOkdn7d",
+      "url": "https://my.feishu.cn/docx/WPTRdWMPgoJkXKxdVGicFOkdn7d",
+      "registered_at": "2026-11-06",
+      "last_synced": null,
+      "last_synced_sha256": null,
+      "note": null
+    },
+    "docs/research/phyagentos-team-projects-survey.md": {
+      "title": "PhyAgentOS ??????",
+      "doc_token": "YfI1dG92JoaDpJxyeDOco7dynqh",
+      "url": "https://my.feishu.cn/docx/YfI1dG92JoaDpJxyeDOco7dynqh",
+      "registered_at": "2026-11-06",
+      "last_synced": null,
+      "last_synced_sha256": null,
+      "note": null
+    },
+    "docs/design/r2c-multi-device-tree-design.md": {
+      "title": "R2C 多设备管理（设备树）特性设计",
+      "doc_token": "QLv9deiZIo0z0UxHtG9cpi8EnVE",
+      "url": "https://my.feishu.cn/docx/QLv9deiZIo0z0UxHtG9cpi8EnVE",
+      "registered_at": "2026-11-06",
+      "last_synced": "2026-11-06T11:28:23+08:00",
+      "last_synced_sha256": "698c05ff50699759a023087f3185b8b613502d0f4e5260150c3df555e7f394c6",
+      "note": "同题旧副本 BvZtdoODWoUjtQxgkYOccxbznkf（空白）已删除；位于应用空间 move 不可用，勿删本条目"
+    }
+  }
+}
