@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的遥操与数据采集"特性的功能设计；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v0.9，待评审**。v0.9（2026-11-06 反馈）：新鲜度仲裁升级为**显式遥操离线机制**——RUNNING 内超时判定操作台离线，自动交还策略模式（录制继续）并发布 `teleop/offline` 事件，重新接管须显式 `resume`；不再使用隐式"过期回退"。v0.7：消除"生命周期门控"与"发布权交接"表述矛盾——客户端感知会话状态并据此门控，不判断接管权限；执行规则为会话状态 + 新鲜度两层判定。v0.8 增补（2026-11-05 反馈）：**新增 `teleop/observations` 录制 → LeRobot v2.1/v3 格式转换设计**（transformer 自定义转换管道；v3 从 v2.1 两段式转换，见 §3.3.2）；**§3.3 按功能重排**（3.3.1 遥操功能实现、3.3.2 数据采集与格式转换、3.3.3 接口设计、3.3.4 数据结构设计）。更早版本：teleop 动作/观测独立话题（20Hz）、观测仅本地不上云（格式同 inference）、图像推拉流上云、同构臂对位/VR 相对位姿、生命周期五话题门控、客户端不区分本地/远程。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**（vr_udp 源/teleop_vr_udp 配置/VR mock 发送端），本文档按保留实现对齐：已实现 = 主从臂（lerobot_leader）+ mock_joints 源、局域网现场遥操、录制；VR/远程遥操相关章节为设计阶段内容。只出设计，不含实现。
+> 状态：**v1.0，待评审**。v1.0（2026-11-06 反馈）：新增 §3.3.5 **VR客户端功能实现**（参考 metaquest-dist：Unity+OpenXR 六层架构、离合相对映射、teleop.v1→r2c 协议映射、Zenoh 传输与部署、阶段化路线）。v0.9（2026-11-06 反馈）：新鲜度仲裁升级为**显式遥操离线机制**——RUNNING 内超时判定操作台离线，自动交还策略模式（录制继续）并发布 `teleop/offline` 事件，重新接管须显式 `resume`；不再使用隐式"过期回退"。v0.7：消除"生命周期门控"与"发布权交接"表述矛盾——客户端感知会话状态并据此门控，不判断接管权限；执行规则为会话状态 + 新鲜度两层判定。v0.8 增补（2026-11-05 反馈）：**新增 `teleop/observations` 录制 → LeRobot v2.1/v3 格式转换设计**（transformer 自定义转换管道；v3 从 v2.1 两段式转换，见 §3.3.2）；**§3.3 按功能重排**（3.3.1 遥操功能实现、3.3.2 数据采集与格式转换、3.3.3 接口设计、3.3.4 数据结构设计）。更早版本：teleop 动作/观测独立话题（20Hz）、观测仅本地不上云（格式同 inference）、图像推拉流上云、同构臂对位/VR 相对位姿、生命周期五话题门控、客户端不区分本地/远程。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**（vr_udp 源/teleop_vr_udp 配置/VR mock 发送端），本文档按保留实现对齐：已实现 = 主从臂（lerobot_leader）+ mock_joints 源、局域网现场遥操、录制；VR/远程遥操相关章节为设计阶段内容。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -179,7 +179,7 @@ sequenceDiagram
 
 ### 3.3 详细功能设计
 
-> 3.3 按功能拆分：3.3.1 遥操功能实现（客户端执行侧）、3.3.2 数据采集与格式转换（录制与导出）、3.3.3 接口设计（共享话题/配置/CLI）、3.3.4 数据结构设计（录制目录）。
+> 3.3 按功能拆分：3.3.1 遥操功能实现（客户端执行侧）、3.3.2 数据采集与格式转换（录制与导出）、3.3.3 接口设计（共享话题/配置/CLI）、3.3.4 数据结构设计（录制目录）、3.3.5 VR客户端功能实现（Quest 操作端，参考 metaquest-dist）。
 
 #### 3.3.1 遥操功能实现
 
@@ -374,6 +374,82 @@ recordings/
 - 文件内容沿用 **R2CR v1**（magic/version/frame_count/索引），帧为消息字节 + 时间戳；不引入新格式。
 - 轮转按大小（默认 512MB）或时长（默认 10min），文件名带起始时间；`meta.json` 为可选旁注，不参与回放正确性，但**参与 episode 分段**（§3.3.2.2）。
 
+
+#### 3.3.5 VR客户端功能实现
+
+> 参考材料：`docs/metaquest-dist.tar.gz`（Meta Quest 遥操客户端开发资料库：六层架构 `design/architecture.md`、teleop.v1 协议 `design/protocol.md`、技术栈 `design/tech-stack.md`、13 个开源参考项目 `teleop/`）。本节定义 VR 客户端（Quest 头显 + 双手柄）的实现方案，作为 §3.3.1.4 VR 相对位姿遥操的操作端落地。
+
+##### 3.3.5.1 功能概述
+
+| 项 | 说明 |
+|----|------|
+| 形态 | Quest 上的 **Unity + OpenXR** 应用（C#，APK，Horizon Store/侧载分发）；WebXR 浏览器版作为轻量验证补充 |
+| 输入 | 双 VR 手柄 6-DoF 位姿 + trigger/grip/thumbstick/按键；手部追踪（21 关键点）作为后续扩展输入 |
+| 输出 | 经离合相对位姿映射生成末端目标，按 **20Hz** 发布到 `{p}/{d}/teleop/actions`（r2c `Actions` 消息） |
+| 反馈 | 订阅 `teleop/observations`（本地）+ 拉流观看相机画面；关节限位/接近奇异点经**手柄振动**反馈 |
+| 会话 | 发布/消费 §3.3.1.2 生命周期话题（start/pause/resume/finish/quit/offline） |
+| 归属 | Unity 工程独立仓库；协议契约与映射参考实现由 `hw-cloudrobo-teleop` 包承载（§11 方案 B） |
+
+##### 3.3.5.2 分层架构（借鉴 metaquest 六层架构）
+
+| 层 | 职责 | 归属 | 平台相关性 |
+|----|------|------|-----------|
+| ① 平台层 | 运行时/渲染/生命周期（Unity + OpenXR，`enumerateInputDevices()`/`runloop()`） | Unity 工程（C#） | **强相关** |
+| ② 输入采集层 | `VRControllerAcquirer`：OpenXR 手柄 6-DoF + 按键采样；后续 `VRHandAcquirer`（手部追踪） | Unity 工程（C#） | **强相关** |
+| ③ 输入抽象层 | 归一化为 `InputSample`（oneof：ControllerSample/HandSample） | 核心库（跨端复用） | 无关 |
+| ④ 映射层 | `MappingStrategy.apply(input, state) → RobotCommand`（策略可插拔 + 滤波链） | 核心库（跨端复用） | 无关 |
+| ⑤ 通信层 | protobuf 序列化 + Zenoh pub/sub（peer 直连 / Router 路由） | 核心库（跨端复用） | 弱相关 |
+| ⑥ 机器人层 | IK/安全/驱动——**在机器人端（r2c client）实现**，操作端只发末端目标 | r2c（已有） | 无关 |
+
+**关键约束**：③④⑤ 构成平台无关核心；①② 随平台替换（Quest/PICO/PC 同一核心，换 OpenXR 插件即可，参考 PICO 4 Ultra 同工程部署）。落到我们：**C# 侧自持平台层 + 采集层，映射后动作直接进 r2c 协议；映射层（④）放在 C# 侧**（离合映射是手感核心、与头显渲染节拍耦合），机器人端不做映射，只做 IK 与安全拦截（与 §11 分层边界一致）。
+
+##### 3.3.5.3 输入采集与映射（功能原理）
+
+- **采集**：OpenXR 每帧采样双手柄 → `ControllerSample{pose, trigger, grip, thumbstick, buttons, side}`（`InputProfile.CONTROLLER`）；grip 扳机兼作 **deadman**（按住才跟随）。
+- **映射策略（首选）`ClutchRelativeMapping`**（借鉴 vr-teleop-kit `ClutchPoseMapper`、Quest2ROS2 相对运动控制）：
+  1. **首帧对齐**：会话建立时读 `inference/observations` 当前 `end_effector_pose` 作为参考锚点（§3.3.1.4）；
+  2. 按住 grip：手柄位姿**相对锚点**的增量 × `position_scale`/`rotation_scale`（默认 1.0，可配）→ 末端目标增量叠加；
+  3. **reach limit**：手柄到达工作空间边界（box/圆柱）→ 停止增量并振动提示；松开 grip（离合）：目标保持，手柄可重新定位到舒适位姿再按住继续（slipping clutch）；
+  4. 滤波链：EMA（α 可配）+ 死区，抑制手柄抖动。
+- **双臂**：`BimanualMapping` = 单策略实例 ×2（laterality：左手柄→左臂、右手柄→右臂），各自独立锚点与离合；输出 `CartesianCommand.targets[2]`。
+- **手部追踪（后续扩展）**：`HandSample`（腕 6-DoF + 21 关键点）→ `HandRetargetingMapping`（dex-retargeting）→ 灵巧手关节目标；本期不实现，`InputSample` oneof 预留。
+- **触觉反馈**：机器人端在接近关节限位/奇异点时经反馈通道下发振动参数，客户端触发手柄振动（借鉴 vr-teleop-kit）。
+
+##### 3.3.5.4 协议映射（teleop.v1 → r2c 话题）
+
+**以 r2c `.proto`（proto3）为唯一 schema 源**；teleop.v1 `Envelope` 不整体引入，仅映射语义（§11，避免双 schema 并存）。protoc 生成 C# 供 Unity 使用（`Google.Protobuf` NuGet，按需裁剪）：
+
+| metaquest 概念 | r2c 落地 | 说明 |
+|----------------|----------|------|
+| `Envelope(RobotCommand/InitialSample)` 控制流（60–120Hz BEST_EFFORT） | `{p}/{d}/teleop/actions`（`Actions` 消息，**20Hz**，BEST_EFFORT） | 映射层输出末端目标 → 填 `Actions`（chunk 对齐沿用 r2c） |
+| `RobotState` 状态反馈（30–60Hz） | `{p}/{d}/teleop/observations`（`Observations`，`publish_hz`，仅本地） | 操作端读取当前位姿/关节做锚点与 UI 显示 |
+| `ControlEvent`（E_STOP/PAUSE/RESUME/RESET/RECORD_TOGGLE） | `teleop/start\|pause\|resume\|finish\|quit`（`TeleopControl`） | E_STOP → 立即 `pause` + 停发动作；RECORD_TOGGLE → `finish`/`start` |
+| `Heartbeat`（10Hz RELIABLE） | 离线检测（`offline_timeout_ms`，§3.3.1.2） | 客户端侧超时判定，无需显式心跳消息 |
+| `teleop/{session}/video`（H.264） | **推拉流通道**（§3.3.1.6） | Quest 端拉流观看，不新增 Zenoh 视频话题 |
+| `Handshake`/`protocol_version` 协商 | 不需要——两端共用同一 r2c proto，随包版本对齐 | schema 漂移由 monorepo CI 校验生成物 |
+
+##### 3.3.5.5 传输与部署
+
+- **局域网**：Quest 与机器人端 Zenoh **peer 直连**（最低延迟）；**远程**：两端分别接 Zenoh Router 自动路由（无需中继/TURN），凭证走 Zenoh TLS + ACL（操作台凭证才可写遥操话题，§5）；
+- **QoS**：控制流 BEST_EFFORT（可丢旧帧），生命周期/事件 RELIABLE（确保送达）；
+- **部署**：Unity 构建 APK（Horizon Store 或侧载）；`hw-cloudrobo-teleop` 包提供 proto 契约、映射参考实现（Python 侧仿真映射器，供无头显调试）与离线仿真回放；Unity 工程仓库不进 monorepo（构建产物不入库）。
+
+##### 3.3.5.6 安全
+
+- deadman（grip）+ `SafetyMeta` 随每帧动作下发；机器人端 `SafetyMonitor` 做最终拦截（工作空间 clamp、速度/加速度限幅、关节限位，§5）；
+- 离线机制沿用 §3.3.1.2：操作台停发超时 → 自动交还策略 + `teleop/offline`，Quest 端 UI 显示"已切回策略模式"，重新接管须 `resume` + 重新对齐锚点；
+- 急停最高优先级：Quest 侧任意时刻可发 `pause`（RELIABLE），客户端先停后处理。
+
+##### 3.3.5.7 实现路线（阶段化，借鉴 metaquest 技术栈路线）
+
+| 阶段 | 内容 | 验收 |
+|------|------|------|
+| 0：协议与骨架（2–3 周） | protoc 生成 C#；Zenoh C# 绑定集成；`Actions`/`TeleopControl` 收发与序列化 | Quest APK 发 InputSample，机器人端字节级一致 |
+| 1：单手柄→单臂闭环（3–4 周） | `VRControllerAcquirer` + `ClutchRelativeMapping`（离合/缩放/EMA）+ 20Hz 发布；局域网 peer 直连 | Quest 手柄离合遥操单臂，首帧对齐正确 |
+| 2：双手柄双臂 + PICO（3–4 周） | `BimanualMapping`（laterality）；同一 Unity 工程切 OpenXR 插件部署 PICO 4 Ultra | 双手柄控双臂；PICO 手柄遥操可用 |
+| 3：远程与观感（3–4 周） | Zenoh Router 远程路由；推拉流观看；触觉反馈（限位/奇异点振动） | 跨互联网遥操 + 视频回传观感达标 |
+
+**参考项目选型**（metaquest `teleop/`）：快速验证链路用 **telegrip / vr-teleop-kit**（WebXR，Quest 浏览器直跑，离合映射已验证）；正式 Unity 实现参考 **meta_quest_teleoperation**（干净的手柄数据管道）与 **beavr-bot**（双臂示范采集框架）；宇树机型直接以 **xr_teleoperate** 为基座。
 ## 4. 可靠性与异常设计
 
 | 异常 | 行为 |
@@ -480,6 +556,7 @@ recordings/
 4. **迁移路径**：PR #2 的 r2c 内 `teleop/` 子包即操作端雏形，评审通过后按 B 平移到新包（模块整体移动，无重写）；机器人端增量（生命周期+门控）在 r2c 内实现。
 
 **待评审决策**：是否接受 B；若接受，新包命名 `hw-cloudrobo-teleop` 与迁移时点（本特性实现前迁移，或先在 r2c 内完成功能、下个版本拆包）。
+
 
 
 
