@@ -1,4 +1,4 @@
-﻿"""TeleopOperator 单元测试（FakeSession + 脚本化输入源）。"""
+"""TeleopOperator 单元测试（FakeSession + 脚本化输入源）。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 import pytest
 from cloudrobo_r2c.teleop.base import TeleopSource, TeleopTarget
 from cloudrobo_r2c.teleop.operator import OperatorConfig, TeleopOperator
-from cloudrobo_r2c.teleop.recording import TeleopSessionRecorder
 
 
 class FakeSession:
@@ -346,35 +345,3 @@ def test_invalid_action_hz_rejected():
 # ── 录制配对 ─────────────────────────────────────────────────────────────
 
 
-def test_recorder_pairs_observation_with_action(tmp_path):
-    session = FakeSession()
-    recorder = TeleopSessionRecorder(str(tmp_path / "session.r2cr"), source_name="scripted")
-    operator = TeleopOperator(
-        session,
-        _joint_config(),
-        source=ScriptedSource([_target({"a": 1.0, "b": 2.0}) for _ in range(2)]),
-        recorder=recorder,
-        clock=FakeClock(),
-    )
-    operator.start()
-    observation = {
-        "timestamp": 42,
-        "joint_states": {"names": ["joint_1"], "position": [0.25]},
-        "images": {"color": {"front": b"\xff\xd8jpeg"}},
-    }
-    session.feed_observation(observation)
-    operator.tick()
-    session.feed_observation({"timestamp": 43})
-    operator.tick()
-    assert recorder.frame_count == 2
-    recorder.close()
-
-    from cloudrobo_r2c.common.utils.safe_serialization import load_frames
-
-    frames = load_frames(str(tmp_path / "session.r2cr"))
-    assert len(frames) == 2
-    assert frames[0]["observation"]["joint_states"]["position"] == [0.25]
-    assert frames[0]["observation"]["images"]["color"]["front"] == b"\xff\xd8jpeg"
-    assert frames[0]["action"]["joint_states"]["names"] == ["joint_1", "joint_2"]
-    assert frames[0]["source_name"] == "scripted"
-    assert frames[1]["observation"]["timestamp"] == 43

@@ -1,10 +1,9 @@
-"""TeleopOperator：遥操操作端主循环（读源 → 映射 → 发布 Actions → 采集）。
+"""TeleopOperator：遥操操作端主循环（读源 → 映射 → 发布 Actions）。
 
 链路::
 
     TeleopSource.read() ──► 目标映射（joint_map / ee_pose_map）──► Actions
-                                                                  │
-    机器人 Observations（订阅）──► 最新观测快照 ──► TeleopSessionRecorder
+    机器人 Observations（订阅）──► 最新观测快照（安全看门狗）
 
 安全策略：
 
@@ -28,7 +27,6 @@ from cloudrobo_r2c.common.models import Actions
 
 from .base import TeleopSource, TeleopTarget, create_source
 from .mapping import build_ee_action, build_joint_action, observation_to_dict
-from .recording import TeleopSessionRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +129,7 @@ class OperatorConfig:
 
 
 class TeleopOperator:
-    """遥操操作端：持有源、订阅观测、按频率发布动作并驱动录制。"""
+    """遥操操作端：持有源、订阅观测、按频率发布动作。"""
 
     def __init__(
         self,
@@ -139,14 +137,12 @@ class TeleopOperator:
         config: OperatorConfig,
         *,
         source: Optional[TeleopSource] = None,
-        recorder: Optional[TeleopSessionRecorder] = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         config.validate()
         self._session = session
         self._config = config
         self._source = source if source is not None else create_source(config.source_cfg)
-        self._recorder = recorder
         self._clock = clock
 
         self._obs_lock = threading.Lock()
@@ -197,9 +193,6 @@ class TeleopOperator:
             self._source.stop()
         except Exception:
             logger.warning("teleop source stop failed", exc_info=True)
-        if self._recorder is not None:
-            self._recorder.close()
-            self._recorder = None
 
     def run(self, duration_s: float = 0.0) -> None:
         """按 ``action_hz`` 循环发布；``duration_s<=0`` 表示一直运行。
@@ -270,11 +263,6 @@ class TeleopOperator:
         self._session.publish_actions(action)
         self._seq += 1
         self._published += 1
-        if self._recorder is not None:
-            try:
-                self._recorder.record(observation, _action_snapshot(action), target)
-            except Exception:
-                logger.exception("teleop recorder failed; continuing without this frame")
         self._log_status(age)
         return action
 
@@ -398,8 +386,6 @@ class TeleopOperator:
 def _clamp01(value: float) -> float:
     return 0.0 if value < 0.0 else (1.0 if value > 1.0 else float(value))
 
-
-def _action_snapshot(action: Actions) -> Dict[str, Any]:
     """发布动作的录制快照（dict 形态，含关节/末端数据）。"""
     snapshot: Dict[str, Any] = {
         "timestamp": action.timestamp,

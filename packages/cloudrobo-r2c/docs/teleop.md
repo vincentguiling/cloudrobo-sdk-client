@@ -1,9 +1,9 @@
-﻿# 遥操与数据采集（Teleop）
+﻿# 遥操（Teleop）
 
 > 本文件是使用指南（怎么跑、怎么配）；特性的设计文档（目标、架构决策、安全设计、决策点，与设备树设计同模板）见 [docs/design/r2c-teleop-data-collection-design.md](../../docs/design/r2c-teleop-data-collection-design.md)（仓库根 docs/design/）。
 
 基于 R2C 数据面的遥操操作端：把**主从臂（leader 臂）**的输入映射为
-`Actions` 下发给机器人，同时把（最新观测, 已发布动作）成对录制为遥操数据集文件。
+`Actions` 下发给机器人。
 现场遥操（局域网）已实现；远程遥操（互联网）与 VR 输入为设计阶段内容（见设计文档 v0.8），实现尚未包含。
 
 ```
@@ -12,7 +12,6 @@
 │  ├─ lerobot_leader（主从臂）  ──►  读源 → 映射 → Actions ──► 发布    │
 │  └─ mock_joints（联调）             │ 订阅 Observations（安全看门狗）│
 │                                     ▼                               │
-│                     TeleopSessionRecorder：(观测, 动作) 成对落盘      │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │ zenoh（LAN 直连 / 云端接入）
                         ┌──────▼──────┐
@@ -140,7 +139,6 @@ frames = load_frames("teleop_session.r2cr")
 | `--endpoints` | - | 逗号分隔 zenoh 端点（LAN：`tcp/<机器人IP>:7447`） |
 | `--mode` / `--endpoint-role` | peer / connect | zenoh 连接模式与角色 |
 | `--duration` | 0 | 运行时长（秒），0 = 直到 Ctrl+C |
-| `--record` / `--no-record` | 配置为准 | 录制覆盖 |
 | `--log-level` / `--log-file` | INFO / - | 日志 |
 
 会话参数与 `cloudrobo r2c client` 一致（同一套 `build_session`）。

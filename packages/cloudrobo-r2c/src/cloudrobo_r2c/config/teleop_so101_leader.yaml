@@ -1,4 +1,4 @@
-# ── 遥操操作端配置：主从臂（LeRobot SO101 主臂） ──────────────────────────
+﻿# ── 遥操操作端配置：主从臂（LeRobot SO101 主臂） ──────────────────────────
 # 搭配机器人端 config/robot_so101_lerobot_config.yaml 使用：
 #   机器人端: cloudrobo r2c client --client-config ... --robot-config config/robot_so101_lerobot_config.yaml
 #   操作端(局域网现场遥操):
@@ -39,6 +39,3 @@ teleop:
     require_observation: true   # 未收到机器人观测前不发动作
     observation_timeout_s: 2.0  # 观测中断超时后停发动作（恢复后自动继续）
 
-  recording:
-    enabled: true               # 遥操数据采集：(最新观测, 已发布动作) 成对落盘
-    path: teleop_session.r2cr

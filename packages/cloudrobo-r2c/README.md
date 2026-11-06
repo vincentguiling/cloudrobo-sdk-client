@@ -1,4 +1,4 @@
-﻿# cloudrobo-r2c
+# cloudrobo-r2c
 
 CloudRobo Robot-to-Cloud (R2C) 数据面 SDK，基于 Zenoh pub/sub 传输、Protobuf 序列化、H264 图像编码，提供机器人端观测数据上报、云端控制指令下发、相机推流与数据面转发能力。
 

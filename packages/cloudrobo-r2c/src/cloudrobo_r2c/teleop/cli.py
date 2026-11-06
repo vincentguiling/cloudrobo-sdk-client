@@ -24,7 +24,6 @@ import yaml
 
 from cloudrobo_r2c.common.config_path import resolve_config_path
 from cloudrobo_r2c.teleop.operator import OperatorConfig, TeleopOperator
-from cloudrobo_r2c.teleop.recording import TeleopSessionRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +32,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the R2C teleoperation operator: reads a teleop source "
-            "(leader arm / VR), publishes Actions to the robot, and records "
-            "(observation, action) pairs for data collection."
+            "(leader arm / VR), publishes Actions to the robot."
         )
     )
     parser.add_argument(
@@ -104,21 +102,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Run duration in seconds; 0 means run until Ctrl+C.",
     )
     parser.add_argument(
-        "--record",
-        type=str,
-        default=None,
-        help=(
-            "Enable teleop session recording to this path (.r2cr); overrides "
-            "teleop.recording in the config."
-        ),
-    )
-    parser.add_argument(
-        "--no-record",
-        dest="no_record",
-        action="store_true",
-        help="Disable recording even if enabled in the teleop config.",
-    )
-    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -146,27 +129,6 @@ def load_teleop_config(path: str | Path) -> Mapping[str, Any]:
     return teleop_cfg
 
 
-def _resolve_recording(
-    teleop_cfg: Mapping[str, Any], args: argparse.Namespace
-) -> Optional[TeleopSessionRecorder]:
-    if args.no_record:
-        logger.info("Teleop recording disabled via --no-record")
-        return None
-    recording_cfg = dict(teleop_cfg.get("recording") or {})
-    enabled = bool(recording_cfg.get("enabled", False))
-    path = recording_cfg.get("path")
-    if args.record:
-        enabled = True
-        path = args.record
-    if not enabled or not path:
-        logger.info("Teleop recording disabled (set teleop.recording or --record to enable)")
-        return None
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    source_type = str((teleop_cfg.get("source") or {}).get("type", ""))
-    logger.info("Teleop recording enabled: %s", path)
-    return TeleopSessionRecorder(str(path), source_name=source_type)
-
-
 def run_teleop_operator(args: argparse.Namespace) -> None:
     from cloudrobo_r2c.cloudroboclient import build_session
 
@@ -177,15 +139,10 @@ def run_teleop_operator(args: argparse.Namespace) -> None:
     teleop_cfg = load_teleop_config(args.teleop_config)
     operator_config = OperatorConfig.from_cfg(teleop_cfg)
 
-    recorder = _resolve_recording(teleop_cfg, args)
     session = None
     try:
         session = build_session(args)
-        operator = TeleopOperator(
-            session,
-            operator_config,
-            recorder=recorder,
-        )
+        operator = TeleopOperator(session, operator_config)
         logger.info(
             "Starting teleop operator (target device=%s/%s, duration=%.1fs)",
             session.project_id,
@@ -194,8 +151,6 @@ def run_teleop_operator(args: argparse.Namespace) -> None:
         )
         operator.run(duration_s=float(args.duration))
     finally:
-        if recorder is not None:
-            recorder.close()
         if session is not None:
             try:
                 session.close()

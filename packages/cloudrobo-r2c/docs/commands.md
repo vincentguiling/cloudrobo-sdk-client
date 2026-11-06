@@ -1,4 +1,4 @@
-﻿# CLI 命令参考
+# CLI 命令参考
 
 cloudrobo-r2c 通过 `cloudrobo r2c` 命令组提供以下子命令。
 
