@@ -173,7 +173,9 @@ sequenceDiagram
         ZO->>R: 录制
     end
     C->>C: 图像推流 → 流媒体（上云，不经 ZO）
-    Note over O,ZA: 操作台停发 > offline_timeout_ms → 客户端判定离线 → 自动交还策略（录制继续）并发布 teleop/offline
+    Note over O,ZA: 操作台停发 > offline_timeout_ms → 判定操作台离线
+    C->>O: teleop/offline（已自动交还策略，含离线时刻与最后动作时间戳）
+    P->>C: inference/actions（离线期间恢复执行，录制标注离线区间）
     Note over O,C: 操作员重新接管须显式 teleop/resume（重新对齐后）
 ```
 
