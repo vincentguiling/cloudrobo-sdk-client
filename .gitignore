@@ -28,6 +28,11 @@ packages/cloudrobo-r2c/src/cloudrobo_r2c/common/models/generated/
 .ruff_cache/
 .coverage
 
+# ---- Feishu doc sync temp files (tools/feishu_doc_sync.py) ----
+.feishu-sync-tmp.md
+.feishu-sync-metas.json
+.feishu-sync-perm.json
+
 # ---- OS ----
 .DS_Store
 Thumbs.db
