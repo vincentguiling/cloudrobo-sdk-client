@@ -9,7 +9,7 @@
 **背景**：本特性主力场景是**遥操接管**——机器人按云端策略自主执行，遇异常时操作员接管，处理完交还自主。现状：遥操在 r2c 之外（LeRobot teleoperate、`--teleop.joint_sign`），r2c 仅有整机原始观测录制（`ObservationRecorder` + `--record`，与本期无关）。
 
 **核心思路**：
-1. **动作话题布局（2026-11-07 定案）**：`inference/actions` **保持不变**（策略多 chunk 流式动作，现网无感）；**移除 `job/action`**；**新增 `teleop/actions`**——承载**遥操动作（20Hz，`source=teleop`）+ job 任务动作（`source=job`）+ 单 chunk 推理动作（`source=policy`，chunk_size=1）**，生命周期经话题内 `command` 帧承载。**执行来源由会话状态决定**：IDLE/FINISHING 执行 `inference/actions` + `teleop/actions`(policy/job)；RUNNING 只执行 `teleop/actions`(teleop)；PAUSED 都不执行。
+1. **动作话题布局（2026-11-07 定案）**：`inference/actions` **保持不变**（策略多 chunk 流式动作，现网无感）；**移除 `job/action`**；**新增 `teleop/actions`**——承载**遥操动作（20Hz，`source=teleop`）+ job 任务动作（`source=job`）+ 单 chunk 推理动作（`source=policy`，chunk_size=1）**，生命周期经话题内 `command` 帧承载。**执行来源由会话状态决定**：IDLE/FINISHED 只执行策略动作（`inference/actions`）；PAUSED 都不执行；其他状态（RUNNING，含遥操离线）只执行遥操动作（`source=teleop`）。
 2. **生命周期 command 帧**：遥操生命周期（start/pause/resume/finish/quit）不再使用独立话题，以 `teleop/actions` 内消息的 **`command` 字段**（`TeleopControl`）承载，任何状态先处理命令帧再做动作仲裁。
 3. **遥操观测独立话题**：`{p}/{d}/teleop/observations`，按 `publish_hz` 发布，**只在本地流转、不上云**（本地操作台反馈消费）；**数据格式与内容与 `inference/observations` 一致**（同一 `Observations` 消息）。**图像通过推拉流上云**（不经 teleop/observations 承载）。
 4. **本地/远程不区分**：本地操作台与远程操作员都发布到 `teleop/actions`（`source=teleop`），客户端无本地/远程分支。
