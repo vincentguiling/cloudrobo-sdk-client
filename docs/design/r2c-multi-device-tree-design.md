@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的多设备管理（多本体 / 多末端 / 多传感器）"特性的功能设计；不属于本文件的内容：业界调研与代码完全调研见 `docs/research/`（`r2c-multi-device-industry-survey.md`、`cloudrobo-r2c-codebase-survey.md`），R2C 现有单设备实现见 `packages/cloudrobo-r2c/`。
 >
-> 状态：**v0.5，待评审**。本版修订：ROS 等传输适配器**只管上下文**（节点、连接、QoS 默认值），**设备自己声明并实现要订阅/发布什么**；场景 2 示例按此调整。前版修订：①补充场景 2 完整配置示例；②支持设备级独立配置文件 + 相对路径引用；③移除派生节点概念——历史/滤波等能力改为 entry-point 注册的普通设备类型。按特性设计模板组织（特性概述 / 需求分析〔需求背景、场景分析、友商分析、名词解释〕/ 功能方案〔功能约束与依赖、整体方案设计、详细功能设计〕/ 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）。
+> 状态：**v0.6，待评审**。v0.6（2026-11-07）：①新增 **§3.3.3（4）推流能力节点 `camera_stream`**——推流作为类似 history 的通用能力节点（复用官方 camera 模块 LiveKit 实现，相机作为其子设备）；②新增 §12 工作项与工作量估算。本版修订：ROS 等传输适配器**只管上下文**（节点、连接、QoS 默认值），**设备自己声明并实现要订阅/发布什么**；场景 2 示例按此调整。前版修订：①补充场景 2 完整配置示例；②支持设备级独立配置文件 + 相对路径引用；③移除派生节点概念——历史/滤波等能力改为 entry-point 注册的普通设备类型。按特性设计模板组织（特性概述 / 需求分析〔需求背景、场景分析、友商分析、名词解释〕/ 功能方案〔功能约束与依赖、整体方案设计、详细功能设计〕/ 可靠性 / 安全 / 性能规格 / 兼容性 / 测试 / 遗留问题）。
 
 ## 1. 特性概述
 
@@ -17,7 +17,7 @@
 **目标**：
 - `robot_config` 支持设备树定义：`hardware` 从单块扩展为列表（项可嵌套 `devices` 体现层级），设备按 `type` 经 entry-point 解析实现，复用 YAML 原生锚点/合并键，配置为纯标准 YAML；
 - 设备级生命周期状态机与逐设备心跳健康；
-- 首批设备类型：本体/机械臂、末端/夹爪、OpenCV 相机、历史（history，预留 filter/tf）；
+- 首批设备类型：本体/机械臂、末端/夹爪、OpenCV 相机、历史（history）、推流（camera_stream，复用官方 camera 模块）；预留 filter/tf；
 - 历史等设备输出经 `Observations.extensions` 随唯一观测入口上行，云端不感知端侧实现细节。
 
 **非目标**（本版本不做）：云端多本体实时协同；`filter` / `tf` 设备类型的实现（仅预留注册位）；入湖数据的云端窗口查询；高频原始流上云；图形化运维界面。
@@ -435,7 +435,19 @@ hardware:
 | 输出 | 见 3.3.4 的 `ObservationWindow` proto 与 extensions 键约定 |
 | 生命周期 | 随子设备：全部子设备 ACTIVE 才 ACTIVE；任一子设备 DEGRADED → 本节点 DEGRADED（窗口批照发，health 标记） |
 
-**（4）后续节点类型（本版本仅注册位）**：`filter`（低通/滑窗滤波）、`tf`（坐标变换）。结构与 `history` 相同：作为父节点引用输入子设备，输出写 extensions 约定键。
+**（4）能力节点 `camera_stream`（推流，类似 history 的 SDK 通用能力节点）**
+
+| 项 | 说明 |
+|----|------|
+| 提供（provides） | 相机帧经 LiveKit WebRTC 推流上云（复用官方 `camera` 模块：`StreamPublisher` + `CameraManager`）；可选振动/触觉反馈下发通道 |
+| 需要（requires） | `devices` 子设备必须是图像 input 节点（产出相机帧）； 云端命令通道（`job/command` 的 CAMERA_START/STOP/RTC_TOKEN_RENEW，模块自带订阅） |
+| 作为父节点 | 被推流的相机（如 `camera1`）作为它的 `devices` 子设备挂在它下面；相机本身仍作为 input 节点产出 `Observations.images`（两路并行：本地观测 + 云端推流） |
+| 参数 | `default_width/default_height/default_fps/max_bitrate`（沿用官方 camera 模块可配项）、`livekit`（room 前缀等；JWT/wss 由云端 `CAMERA_START` 下发，不在配置中） |
+| 生命周期 | 命令驱动：收到 `CAMERA_START` 才推流；`CAMERA_STOP` 关流；`RTC_TOKEN_RENEW` 到期前自动续签；子设备（相机）DEGRADED → 本节点 DEGRADED 并告警 |
+| 与官方模块关系 | **非重新实现**——设备树只做"声明与编排"（哪些相机要可推流、挂在哪个节点下），推流引擎复用 `camera` 模块的 `StreamPublisher`/`CameraManager`/`CommandHandler`（该模块已随 r2c_sdk 0.2.8 同步入库） |
+| 校验 | 子设备必须是图像 input 节点；`camera_id` 与子设备 `name` 映射唯一（`all/front/wrist…` ↔ 节点名） |
+
+**（5）后续节点类型（本版本仅注册位）**：`filter`（低通/滑窗滤波）、`tf`（坐标变换）。结构与 `history` 相同：作为父节点引用输入子设备，输出写 extensions 约定键。
 
 #### 3.3.4 数据结构设计
 
@@ -524,9 +536,27 @@ extensions["<设备名>.window"] = ExtensionValue{
 | D6 | 是否上报端云时钟差 | V1 不做，依赖 NTP 运维前提 |
 | D7 | 设备输出承载方式 | **已定案**：不新起 topic，观测唯一入口，extensions 承载，云端不感知端侧实现 |
 | D8 | 配置引用机制 | **已定案（2026-11-05 三次）**：兼容优先——不新增顶层段，`hardware` 单块→列表（项可嵌套 devices 体现树层级）；复用用 YAML 原生锚点/合并键（配置为纯标准 YAML） |
+| D10 | 推流能力节点 `camera_stream` | **已定案（2026-11-07）**：推流作为类似 history 的通用能力节点纳入设备树——相机作为其子设备、编排复用官方 camera 模块（LiveKit StreamPublisher/CameraManager），不重新实现推流引擎 |
 | D9 | 传输上下文与设备的职责边界 | **已定案（2026-11-05）**：上下文只提供节点/连接与建订阅/发布句柄（`create_subscription`/`create_publisher`），**topic 与消息类型由设备配置声明**；适配器不感知设备语义 |
 
 
+
+### 9.1 工作项与工作量估算（本期）
+
+> 估算为 1 人全职（人日）；依赖项见括注。**范围前提**：推流端侧已实现（官方 camera 模块），本期以设备树接入与编排为主。
+
+| # | 工作项 | 内容 | 估算 | 依赖 |
+|---|--------|------|------|------|
+| W1 | `camera_stream` 能力节点 | 设备树接入层：节点类（声明/校验/生命周期）、子设备映射（camera_id↔节点名）、与 `StreamPublisher`/`CameraManager` 的接线（帧源取自子设备） | 3 人日 | — |
+| W2 | 配置 schema 与校验 | `robot_config_schema` 增量：`history_window`/`camera_stream` 显式校验（补 `extra="allow"` 静默，偏差 #6）；`requires⊆provides` 能力匹配校验 | 2 人日 | — |
+| W3 | `DeviceManager` 树装载 | 按树自上而下构造、能力句柄注入子设备、嵌套 `devices` 装载与错误报告 | 3 人日 | W2 |
+| W4 | `history` 设备类型实现 | 环形缓冲 + 截窗 + `ObservationWindow` proto + extensions 写入 + WARMUP/HEALTHY/DEGRADED | 3 人日 | W3 |
+| W5 | `opencv_camera` 设备类型实现 | OpenCV 采集（`index_or_path`/宽高/fps）+ ICameraFrameSource 适配（供 camera_stream 取帧） | 2 人日 | W3 |
+| W6 | `job/action`→`teleop/actions` 迁移配套 | 旧话题兼容期并行消费（设计见遥操文档 §3.3.3 迁移说明，端侧属遥操特性，此处仅设备树侧兼容位） | 1 人日 | — |
+| W7 | 单元测试 | RingBuffer 边界、截窗语义、能力匹配校验、command 帧状态机、配置校验报错 | 3 人日 | W2–W5 |
+| W8 | 集成测试（场景 1/2） | 力+历史 e2e（频率/满窗/seq/health）；ros2(arm+gripper)+双相机+camera_stream 推流 e2e | 3 人日 | W1–W5 |
+| W9 | 文档与示例 | 示例配置（transports/devices 两文件）、README、迁移说明 | 1 人日 | — |
+| | **合计** | | **21 人日（约 4 周日历）** | |
 
 
 
