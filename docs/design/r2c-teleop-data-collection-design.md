@@ -20,7 +20,6 @@
 - 新增 `teleop/actions`：承载遥操动作（20Hz）+ job 任务动作 + 单 chunk 推理动作（`source`/`command` 字段扩展）；`inference/actions` 保持不变；`job/action` 移除；
 - 会话生命周期门控：command 帧驱动的客户端状态机（§3.3.1.2），仅 RUNNING 态执行 `source=teleop` 动作；
 - 同构臂遥操的位姿预对齐流程；VR 遥操的相对位姿模式（VR 客户端实现见 §3.3.3）；
-- 同构臂遥操的位姿预对齐流程；VR 遥操的相对位姿模式（VR 客户端实现见 §3.3.3）；
 
 - 图像经推拉流上云（LiveKit，官方 camera 模块）；
 - 配置最小化（客户端新增 ≤ 5 项，均有默认值）。
@@ -34,7 +33,6 @@
 | 维度 | 现状 | 差距 |
 |------|------|------|
 | 动作通路 | 策略动作 `inference/actions` 与任务动作 `job/action` 分话题；遥操在 r2c 外 | **`inference/actions` 不变**；移除 `job/action`；新增 `teleop/actions`（遥操 20Hz + job + 单 chunk 推理动作），生命周期以 `command` 帧承载 |
-| 遥操观测 | 只有 `inference/observations`（给模型） | 画面经 LiveKit 推拉流上云观看 |
 | 遥操输入模式 | 只有外部主从臂 | 需要同构臂位姿预对齐与 VR 相对位姿两种模式（VR 客户端 §3.3.3） |
 | 本地 vs 远程 | 概念上视为两种模式 | 客户端不应区分：同一 `teleop/actions`（`source=teleop`） |
 
