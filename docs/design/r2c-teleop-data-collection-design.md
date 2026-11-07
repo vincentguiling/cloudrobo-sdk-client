@@ -86,7 +86,7 @@
 **约束**：
 - C1 动作话题布局：`inference/actions` 保持不变；`teleop/actions` 承载遥操（频率由配置指定）+ job + 单 chunk 推理动作（`source` 区分）；生命周期以 `command` 帧（`TeleopControl`）承载，不再使用独立生命周期话题；
 - C2 客户端**不区分**本地/远程遥操，同一 `teleop/actions` 与同一执行路径；
-- C3 图像通过**推拉流**上云（复用官方 `camera` 模块 LiveKit 实现，§3.3.1.6）；
+- C3 图像通过**推拉流**上云（复用官方 `camera` 模块 LiveKit 实现，§3.3.1.6）；无 bundle 的本地场景按 §3.3.1.6"本地场景"分层处理；
 - C5 遥操输入两类（绝对量）：同构臂（关节绝对位置，位姿预对齐）与 VR（绝对位姿，初始值 = `inference/observations` 指定位姿）；
 - C6 数据采集为非目标（2026-11-06 裁撤）：本地录制、格式转换、回放均不在本期范围；
 - C7 遥操功能**全部在 r2c 包内实现**（机器人端增量在 client 执行路径；操作端走独立入口 `cloudrobo r2c teleop` 与独立配置文件），不新建包；
@@ -244,7 +244,17 @@ VR 客户端发送**绝对位姿**（非相对/增量）：①**初始值** = `i
 | 观看端 | LiveKit Room 拉流：①**监控大屏**；②云端控制台；③**VR 客户端（Quest）拉流观看**（对齐 metaquest `teleop/{session}/video` 语义，不经 Zenoh 话题） |
 | 与控制流隔离 | 视频与 `teleop/actions`（Zenoh）完全独立通道，互不阻塞；视频中断不影响遥操控制（§4） |
 
-**观看端与反馈语义**：监控大屏与 VR 客户端**通过视频获得视觉反馈**，因此视频时延直接决定遥操手感——端到端时延目标 ≤300ms（与 `offline_timeout_ms` 同量级，避免视频滞后引发误判）；时延测量与调优列入遗留问题（§9）。
+'**本地场景（无 bundle/无云凭证）的推流实现**：`CAMERA_START` 的 wss URL/JWT 由云端下发——没有 bundle（本地 VR 遥操、本地主从臂遥操）时无云端命令与凭证，推流按以下分层处理：
+
+| 场景 | 推流实现 |
+|------|----------|
+| 本地 VR 遥操（Quest 需看画面） | **自托管 LiveKit**：在机器人端或操作端 PC 局域网内部署 LiveKit 服务（`livekit/livekit-server`，单容器）；`teleop_operator.yaml` 直接配置 `livekit: {url: ws://<host>:7880, api_key, api_secret}`，操作端入口**本地构造** `CameraCommand{CAMERA_START}`（JWT 由本地 api_key 自签）并直接调用 `CameraManager.start_streaming`——`StreamPublisher` 代码路径与云场景完全相同，仅命令来源从"云端 job/command"变为"本地配置"；Quest 连同一 Room 拉流 |
+| 本地主从臂遥操（操作员在机器人旁） | 默认**无需推流**——操作员目视即可；如需记录/回看画面，用与上行相同的本地 LiveKit 方案（画面进 Room 供大屏回看），或退化为本地窗口直显（`ICameraFrameSource.get_latest_frame` → 操作端本地 OpenCV 窗口，零网络依赖） |
+| 云场景（有 bundle） | 现有路径不变：云端下发 `CAMERA_START`（JWT+wss 由平台签发），见上表 |
+
+**设计要点**：三种场景共用同一 `StreamPublisher`/`CameraManager` 代码路径，差异仅在 `CameraCommand` 的**来源**（云端下发 vs 操作端本地构造）与 **JWT 签发方**（平台 vs 本地 api_key 自签）；`camera` 模块无需为此改动。
+
+'**观看端与反馈语义**：监控大屏与 VR 客户端**通过视频获得视觉反馈**，因此视频时延直接决定遥操手感''——端到端时延目标 ≤300ms（与 `offline_timeout_ms` 同量级，避免视频滞后引发误判）；时延测量与调优列入遗留问题（§9）。
 #### 3.3.2 VR客户端功能实现
 
 > 参考材料：`docs/metaquest-dist.tar.gz`（Meta Quest 遥操客户端开发资料库：六层架构 `design/architecture.md`、teleop.v1 协议 `design/protocol.md`、技术栈 `design/tech-stack.md`、13 个开源参考项目 `teleop/`）。本节定义 VR 客户端（Quest 头显 + 双手柄）的实现方案，作为 §3.3.1.4 VR 相对位姿遥操的操作端落地。
