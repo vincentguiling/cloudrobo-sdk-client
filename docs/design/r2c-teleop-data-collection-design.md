@@ -64,8 +64,8 @@
 | Viam | 失联即停 | 客户端只需超时即停 |
 | ROS 2 + Zenoh | topic → key expression；regex 策略控频率/QoS | 话题即接口；来源可用消息字段承载 |
 | Genie Studio / 灵渠 OS | 采集任务与校验在云侧/工具链，端侧薄 | 端侧只发动作，编排上移 |
-| Dora | 数据流应用框架：YAML 数据流图编排节点（输入源/映射/控制各自为节点），零拷贝 Arrow/SHM 传输（Rust 核心）；`dora record` 全图录制 | 操作端运行时的**节点化形态**参考（输入源→映射→安全→发布各自独立节点）；但 Dora 是本地/多机 pipeline 框架，**不解决机器人↔云链路**（鉴权/多租户/跨公网），与 r2c 数据面 SDK 不构成替代（详见 `docs/research/r2c-vs-dora-middleware-comparison.md`） |
-| PhyAgentOS | 具身智能运行时底座：Session 为最小调度单位、State-as-a-File、**分层安全**（preflight → action bridge → SafetyGuard → 心跳监控 → 目标侧约束）；机器人适配器（adapter-robot-piper 等）；数据面复用 Dora/Arrow | **Session 概念与分层安全链**对应我们的遥操会话（command 帧 + 状态机）与 deadman + SafetyMonitor 设计；其"状态走文件、高频数据走总线"的取舍印证遥操动作走 Zenoh 高频通道、会话元数据走轻量 command 帧的分层（详见 `docs/research/phyagentos-team-projects-survey.md`） |
+| Dora（dora-rs/dora） | **它是什么**：一个本地机器人程序框架——把"手柄采集、动作换算、安全检查、下发执行"各自做成独立小程序（节点），再用一份 YAML 文件声明谁连谁，框架按图拉起进程并用共享内存传数据（延迟比 ROS 低 10–17 倍）。**和本设计的关系**：它管的是机器人本机/局域网内的程序编排，不管机器人↔云的连接（鉴权/多租户/跨公网），因此与 r2c 不冲突也不互替。**借鉴点**：操作端运行时按"输入采集→映射→安全检查→发布"拆成独立模块的分层方式（详见 `docs/research/r2c-vs-dora-middleware-comparison.md`） |
+| PhyAgentOS（PhyAgentOS-core） | **它是什么**：一个具身智能"运行时底座"（开源，MIT）——管 Agent 规划怎么变成机器人动作；特色是把一次任务当作"会话（Session）"来调度与验收，动作执行前过一道道安全检查（预检 → 动作桥 → SafetyGuard → 心跳 → 目标侧限位）。**和本设计的关系**：与我们同样做"人/Agent 驱动机器人"这件事，但它是通用 Agent 底座，我们是面向遥操场景的专用设计。**借鉴点**：①"会话"概念印证我们的遥操会话（command 帧驱动状态机）设计；②其分层安全链与我们"操作端 deadman + 客户端限幅 + 机器人端 SafetyMonitor"逐层对应，方向一致；③它把高频动作数据走总线、慢变化的会话状态另走轻量通道，与本设计"动作走 teleop/actions、会话控制走 command 帧"的取舍一致（详见 `docs/research/phyagentos-team-projects-survey.md`） |
 
 ### 2.4 名词解释
 
