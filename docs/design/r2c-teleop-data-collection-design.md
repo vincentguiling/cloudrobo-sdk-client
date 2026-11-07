@@ -15,13 +15,13 @@
 4. **本地/远程不区分**：本地操作台与远程操作员都发布到 `teleop/actions`（`source=teleop`），客户端无本地/远程分支。
 
 6. **遥操输入两类**：同构臂——先对齐位姿再跟随；VR——相对位姿模式（首帧对齐 `end_effector_pose`）。
-6. **遥操离线机制（自动交还策略）**：RUNNING 态内超过 `offline_timeout_ms`（默认 300ms）未收到 `source=teleop` 动作，客户端判定**操作台离线**，自动切回策略模式（恢复执行 policy/job 动作），并发布 `teleop/offline` 事件通知操作台；离线期间遥操动作不再执行，**操作员须显式 `resume` command 帧才能重新接管**（避免误以为仍在控制）。
+6. **遥操离线机制（停止保持）**：RUNNING 态内超过 `offline_timeout_ms`（默认 300ms）未收到 `source=teleop` 动作，客户端判定**操作台离线**，发布 `teleop/offline` 事件通知操作台；离线期间**动作全部停止并保持**（遥操动作不再执行），**操作员须显式 `resume` command 帧才能重新接管**（避免误以为仍在控制）。
 8. **实现归属**：遥操相关功能**全部在 r2c 包内实现**——机器人端增量在 client 执行路径（sync_client），操作端运行时以独立入口（`cloudrobo r2c teleop`）与独立配置文件（teleop YAML）承载，不新建包（§11 定案）。
 
 **目标**：
 - 新增 `teleop/actions`：承载遥操动作（20Hz）+ job 任务动作 + 单 chunk 推理动作（`source`/`command` 字段扩展）；`inference/actions` 保持不变；`job/action` 移除；
 - 会话生命周期门控：command 帧驱动的客户端状态机（§3.3.1.2），仅 RUNNING 态执行 `source=teleop` 动作；
-- 遥操离线机制：RUNNING 内超时判定离线 → 自动交还策略模式 + `teleop/offline` 事件 + 显式 `resume` 重新接管；
+  - 遥操离线机制：RUNNING 内超时判定离线 → 停止保持 + `teleop/offline` 事件 + 显式 `resume` 重新接管；
 - 同构臂遥操的位姿预对齐流程；VR 遥操的相对位姿模式（VR 客户端实现见 §3.3.3）；
 
 - 图像经推拉流上云（teleop/observations 不承载图像上云）；
@@ -60,7 +60,7 @@
 | 同构臂位姿预对齐 | ✗ | ✔ 操作前对齐到当前位姿（读 inference/observations） |
 | VR 相对位姿遥操 | ✗ | ✔ 首帧对齐 `end_effector_pose`，后续增量（VR 客户端 §3.3.3） |
 | 本地/远程一致 | 概念上分叉 | ✔ 同一统一话题，客户端不分 |
-| 遥操离线机制 | 无 | ✔ RUNNING 内超时判定操作台离线 → 自动交还策略模式（`teleop/offline` 事件），重新接管须显式 `resume` command 帧 |
+| 遥操离线机制 | 无 | ✔ RUNNING 内超时判定操作台离线 → 停止保持（`teleop/offline` 事件），重新接管须显式 `resume` command 帧 |
 
 ### 2.3 友商分析
 
@@ -83,8 +83,8 @@
 | 推拉流 | 图像上云方式：客户端把相机画面推到流媒体服务，云端/远程操作台拉流观看；teleop/observations 不承载图像上云 |
 | 同构臂位姿预对齐 | 同构臂遥操开始前，把主臂位姿调整到与从臂当前位姿一致（读 `inference/observations`），对齐完成前不下发动作 |
 | VR 相对位姿遥操 | VR 首帧位姿与从臂当前 `end_effector_pose` 对齐建立参考系，之后按 VR 相对位姿增量驱动 |
-| 遥操离线机制 | RUNNING 内超过 `offline_timeout_ms` 未收到 `source=teleop` 动作 → 判定操作台离线：自动交还策略模式、发布 `teleop/offline`；重新接管须显式 `resume` command 帧 |
-| 会话状态门控 | 客户端维护数采会话状态（IDLE/RUNNING/PAUSED/FINISHING/FALLBACK 语义见 §3.3.1.2），按状态决定消费的 `source`；**客户端感知"会话状态"，但不判断"接管权限/归属"**（谁可接管由 Zenoh ACL 与操作台约定） |
+| 遥操离线机制 | RUNNING 内超过 `offline_timeout_ms` 未收到 `source=teleop` 动作 → 判定操作台离线：停止还策略模式、发布 `teleop/offline`；重新接管须显式 `resume` command 帧 |
+| 会话状态门控 | 客户端维护数采会话状态（IDLE/RUNNING/PAUSED/FINISHING/FALLBACK 语义见 §3.3.1.2），IDLE/FINISHED 只执行策略动作；PAUSED 都不执行；其他状态（RUNNING）只执行遥操动作；**客户端感知"会话状态"，但不判断"接管权限/归属"**（谁可接管由 Zenoh ACL 与操作台约定） |
 
 ## 3. 功能方案
 
@@ -117,7 +117,7 @@
 | 图像上云 | **推拉流（已实现，直接复用）**：官方 `camera` 模块经 LiveKit WebRTC 推流（`job/command` 的 CAMERA_START/STOP + JWT 续签），云端/远程拉流 | 高频图像不走 Zenoh 观测话题；teleop/observations 保持轻量 |
 | 同构臂预对齐 | 遥操开始前读 `inference/observations` 当前位姿，主臂对齐后才进入跟随 | 消除初始位姿差，避免起跳 |
 | VR 相对位姿 | 首帧 VR 位姿与 `end_effector_pose` 对齐，后续按增量映射 | VR 无物理对齐手段，用参考系平移 |
-| 执行来源与离线机制 | 会话状态决定执行来源（IDLE/FINISHING→policy/job；RUNNING→teleop；PAUSED→都不执行）+ 离线检测（RUNNING 内超 `offline_timeout_ms` 无 `source=teleop` 动作 → 判定离线、自动交还策略、发 `teleop/offline`、需显式 `resume` command 帧重新接管；策略也停 → 停止保持） | 离线是显式状态迁移而非隐式回退；操作员始终知道当前是遥操还是策略 |
+| 执行来源与离线机制 | 会话状态决定执行来源（IDLE/FINISHED→只执行策略动作；RUNNING→只执行遥操动作；PAUSED→都不执行）+ 离线检测（RUNNING 内超 `offline_timeout_ms` 无 `source=teleop` 动作 → 判定离线、停止保持、发 `teleop/offline`、需显式 `resume` 重新接管；不做隐式回退策略） | 离线是显式状态迁移；操作员始终知道当前是遥操还是策略 |
 | 本地/远程 | 不区分，同一话题（`source=teleop`） | 去掉客户端模式分支 |
 | 采集 | 本期不做（非目标，2026-11-06 裁撤） | — |
 | 实现归属 | **全部在 r2c 包内**：机器人端增量在 client 执行路径；操作端走独立入口与配置文件（§11 定案） | 管理面/console 研讨结论：不新建包 |
@@ -126,14 +126,14 @@
 
 ```text
 发布端                                                客户端
-  ├── 自主策略 ──► inference/actions（保持不变，多 chunk 流式）──► 会话门控（IDLE/离线时执行）
+  ├── 自主策略 ──► inference/actions（保持不变，多 chunk 流式）──► 会话门控（IDLE/FINISHED 执行）
   ├── 任务(job) ──► source=job ─────┐
-  └── 推理(单chunk) ─► source=policy ─┴─► {p}/{d}/teleop/actions ──► 会话门控 + 离线检测/自动交还
+  └── 推理(单chunk) ─► source=policy ─┴─► {p}/{d}/teleop/actions ──► 会话门控 + 离线检测/停止保持
   └── 操作台(本地/远程) ─► source=teleop（20Hz）+ command 帧 ─┘        │
                                                                     ▼
                                                           限幅/安全检查 → 设备
 
-  客户端 ──► teleop/offline（事件，离线时）──► 操作台（提示已被自动交还）
+  客户端 ──► teleop/offline（事件，离线时）──► 操作台（提示已停止保持，须 resume 重新接管）
   客户端 ──► teleop/observations（publish_hz，仅本地流转）──► 本地操作台（反馈）
   客户端 ──► 相机画面 ──推流──► 流媒体服务 ──拉流──► 云端/远程观看（图像上云）
 ```
@@ -171,8 +171,8 @@ sequenceDiagram
     end
     C->>C: 图像推流 → 流媒体（上云，不经 ZO）
     Note over O,ZA: source=teleop 停发 > offline_timeout_ms → 判定操作台离线
-    C->>O: teleop/offline（已自动交还策略，含离线时刻与最后动作时间戳）
-    P->>C: inference/actions（离线期间恢复消费，保持不变）
+    C->>O: teleop/offline（已停止保持，含离线时刻与最后动作时间戳）
+    Note over P,C: 离线期间动作全部停止保持（不回退策略）；resume 后重新执行遥操
     Note over O,C: 操作员重新接管须显式 command 帧 resume（重新对齐后）
 ```
 
@@ -185,20 +185,20 @@ sequenceDiagram
 ##### 3.3.1.1 功能原理
 
 - **动作订阅与执行规则（会话状态决定来源 + 在线/离线状态）**：客户端订阅 `inference/actions`（不变）与 `teleop/actions`（遥操/job/单 chunk 推理混流，20Hz 遥操节拍），按话题与消息 `source`/`command` 字段分流。
-  - `IDLE` / `FINISHING`：执行 `inference/actions`（不变）+ `teleop/actions` 内 `source∈{policy,job}` 动作；`source=teleop` 动作丢弃（计数告警）；
-  - `RUNNING` + **遥操在线**（最近 `offline_timeout_ms` 内有 `source=teleop` 动作）：只执行 `teleop/actions` 内 `source=teleop` 动作；`policy/job` 动作不消费（不丢弃、不缓存）；
+  - `IDLE` / `FINISHED`：只执行**策略动作**（`inference/actions`）；`source=teleop` 动作丢弃（计数告警）；
+  - `RUNNING` + **遥操在线**（最近 `offline_timeout_ms` 内有 `source=teleop` 动作）：只执行 `source=teleop` 遥操动作；`policy/job` 动作不消费（不丢弃、不缓存）；
   - `RUNNING` + **遥操离线**（超过 `offline_timeout_ms` 无 `source=teleop` 动作）：判定操作台离线 → **自动交还策略模式**，恢复执行 `inference/actions` 与 `teleop/actions` 内 policy/job 动作，发布 `teleop/offline` 事件；离线期间新到的 `source=teleop` 动作一律不执行（须 `resume` command 帧重新接管）；
-  - `RUNNING` + 遥操离线且策略动作也过期：停止并保持（安全兜底）；
+
   - `PAUSED`：两路都不执行（保持位姿），避免"暂停遥操但策略继续动"；PAUSED 不做离线检测（人工暂停与失联区分开）。
   在线/离线只影响"由谁驱动"，不改变既有的 stale 判定、chunk 对齐、n-skip、fusion。
 - **command 帧优先**：任何状态下，携带 `command`（TeleopControl）的消息先按状态机处理（§3.3.1.2），再做动作仲裁；command 帧无动作步，不进入执行路径。
 - **本地/远程统一**：操作台无论本地进程还是远端节点，都以 `source=teleop` 向 `teleop/actions` 发布；`teleop/observations` 的消费者在本地。客户端无模式分支。
-- **接管、离线自动交还与显式交还**：
+- **接管、离线停止保持与显式交还**：
   - **接管** = 控制端发 `command=start`（`source=teleop`）进入 RUNNING，操作台发布 `source=teleop` 动作即被执行；**策略在会话期间持续发布**，作为离线交还后的执行来源；
-  - **离线自动交还** = RUNNING 内超过 `offline_timeout_ms` 无 `source=teleop` 动作 → 判定操作台离线 → 自动切回策略模式（执行 `policy/job` 动作）、发布 `teleop/offline` 事件；**这是状态迁移，不是隐式回退**——离线期间遥操动作不被执行，操作员侧 UI 由该事件提示"已自动交还"；
+  - **离线停止保持** = RUNNING 内超过 `offline_timeout_ms` 无 `source=teleop` 动作 → 判定操作台离线 → **动作全部停止并保持**（不回退策略）、发布 `teleop/offline` 事件；离线期间遥操动作不被执行，操作员侧 UI 由该事件提示"已停止，请 resume 重新接管"；
   - **重新接管** = 操作员排除故障后发 `command=resume`（操作台侧完成重新对齐/确认）→ 回到遥操在线；
   - **显式交还** = 控制端发 `command=finish`/`quit` → 回 IDLE，恢复纯策略执行。
-  客户端按会话状态 + 在线/离线决定执行来源，**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）。
+  客户端按会话状态决定执行来源（策略 or 遥操 or 停止），**不判断"谁有接管权限"**（权限由 Zenoh ACL 与操作台约定）。
 
 ##### 3.3.1.2 会话生命周期与数采门控
 
@@ -212,7 +212,7 @@ RUNNING/PAUSED --command:quit--> IDLE
 RUNNING 内部子态：teleop_online（默认，start/resume 后）--超时无 source=teleop 动作--> teleop_offline（自动交还策略，发 offline 事件）--command:resume--> teleop_online
 ```
 
-- **门控规则（核心安全语义）**：仅 **RUNNING 且遥操在线**时客户端执行 `source=teleop` 动作；IDLE/PAUSED/FINISHING/离线态收到的遥操动作一律丢弃（计数并限频告警）。PAUSED 时策略动作也不执行（整体保持），避免"暂停遥操但策略继续动"的意外。**command 帧任何状态都先处理**（状态机合法性校验后转移）。
+- **门控规则（核心安全语义）**：执行来源由会话状态决定——**IDLE/FINISHED 只执行策略动作；RUNNING（遥操在线）只执行遥操动作；PAUSED 都不执行**。非执行态收到的动作一律丢弃（计数并限频告警）。PAUSED 时策略动作也不执行（整体保持），避免"暂停遥操但策略继续动"的意外。**command 帧任何状态都先处理**（状态机合法性校验后转移）。
 - **生命周期语义**：`start/finish/quit/pause/resume` 仅驱动会话状态与门控——`finish` 会话收尾（回 IDLE，恢复纯策略执行）、`quit` 中止回 IDLE；录制相关语义随数据采集裁撤（非目标）。
 - **消息形态**：`Actions` 消息扩展（proto3 只增不改，兼容旧发布端）：
 
@@ -231,7 +231,7 @@ message TeleopControl {
   oneof payload {
     Start   start   = 10;      // input_mode: isomorphic_arm | vr
     Pause   pause   = 11;
-    Resume  resume  = 12;      // 离线自动交还后重新接管（操作台侧须先完成重新对齐/确认）
+    Resume  resume  = 12;      // 离线停止保持后重新接管（操作台侧须先完成重新对齐/确认）
     Finish  finish  = 13;      // 会话收尾（无录制语义）
     Quit    quit    = 14;
   }
@@ -330,7 +330,7 @@ VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effect
 ##### 3.3.2.6 安全
 
 - deadman（grip）+ `SafetyMeta` 随每帧动作下发；机器人端 `SafetyMonitor` 做最终拦截（工作空间 clamp、速度/加速度限幅、关节限位，§5）；
-- 离线机制沿用 §3.3.1.2：操作台停发超时 → 自动交还策略 + `teleop/offline`，Quest 端 UI 显示"已切回策略模式"，重新接管须 `resume` + 重新对齐锚点；
+- 离线机制沿用 §3.3.1.2：操作台停发超时 → 停止保持 + `teleop/offline`，Quest 端 UI 显示"已停止，须 resume 重新接管"，重新接管须 `resume` + 重新对齐锚点；
 - 急停最高优先级：Quest 侧任意时刻可发 `command=pause`（RELIABLE），客户端先停后处理。
 
 ##### 3.3.2.7 实现路线（阶段化，借鉴 metaquest 技术栈路线）
@@ -351,7 +351,7 @@ VR 首帧位姿作为参考原点，与 `inference/observations` 的 `end_effect
 | 话题 | 方向 | 频率 | 说明 |
 |------|------|------|------|
 | `{p}/{d}/teleop/actions` | **新增**（job/推理单chunk/操作台 → 客户端） | 遥操 **20Hz** + 事件 | 承载：**遥操动作**（`source=teleop`，20Hz）+ **job 任务动作**（`source=job`，替代 `job/action`）+ **单 chunk 推理动作**（`source=policy`，chunk_size=1）；生命周期经 `command`（TeleopControl）控制帧；**仅 RUNNING 态执行 `source=teleop`**（见 §3.3.1.2） |
-| `{p}/{d}/teleop/offline` | 客户端 → 控制端 | 事件 | **新增**；操作台离线被自动交还时发布（含离线时刻与最后动作时间戳），提示操作员"已切回策略模式，重新接管须 resume" |
+| `{p}/{d}/teleop/offline` | 客户端 → 控制端 | 事件 | **新增**；操作台离线停止保持时发布（含离线时刻与最后动作时间戳），提示操作员"已切回策略模式，重新接管须 resume" |
 | `{p}/{d}/inference/observations` | 客户端 → 云模型 | 0.5Hz（D3） | 现有；推理观测（含当前位姿，供预对齐/VR 首帧读取） |
 | `{p}/{d}/teleop/observations` | 客户端 → **本地**操作台 | `publish_hz` | **新增**；仅本地流转不上云，格式与 inference/observations 一致 |
 | 推拉流通道 | 客户端 → 流媒体 → 云端/远程 | 视频帧率 | **图像上云**（teleop/observations 不承载图像上云） |
@@ -414,7 +414,7 @@ teleop:
 
 | 层级 | 内容 |
 |------|------|
-| 集成（离线交还） | RUNNING 内操作台停发 `source=teleop` >offline_timeout_ms → 自动交还策略（policy 动作恢复执行）、teleop/offline 发布、录制含离线标记；离线期间下发遥操动作被丢弃；resume command 后重新执行遥操 |
+| 集成（离线停止） | RUNNING 内操作台停发 `source=teleop` >offline_timeout_ms → 停止保持（不回退策略；policy 动作恢复执行）、teleop/offline 发布、录制含离线标记；离线期间下发遥操动作被丢弃；resume command 后重新执行遥操 |
 | 集成（生命周期 command） | 统一话题上 command 帧驱动状态机：IDLE 下发 `source=teleop` 动作被丢弃；start 后执行；pause 停止执行且策略保持；resume 恢复；finish 落盘后回 IDLE 再次阻断；quit 丢弃未落盘数据；非法转移（IDLE 收 resume）忽略并告警 |
 | 集成（同构臂对齐） | 模拟主臂位姿 ≠ 当前位姿：对齐完成前操作台不下发；对齐后跟随 |
 | 集成（VR 相对位姿） | 首帧对齐 end_effector_pose 后，增量映射正确、参考系不漂移 |
@@ -442,7 +442,7 @@ teleop:
 | U4 | 遥操动作下发频率 | **已定案**：20Hz |
 | U5 | teleop/observations 流转范围与格式 | **已定案**：仅本地流转不上云，格式与内容与 inference/observations 一致；图像走推拉流 |
 | U6 | 遥操输入模式 | **已定案**：同构臂（位姿预对齐）与 VR（相对位姿，首帧对齐 end_effector_pose）两类 |
-| U7 | 遥操离线机制 | **已定案（2026-11-06 反馈）**：RUNNING 内超 `offline_timeout_ms`（默认 300ms）无 `source=teleop` 动作 → 判定操作台离线，**自动交还策略模式**（策略恢复执行、录制继续）并发布 `teleop/offline`；重新接管须显式 `resume` command 帧 |
+| U7 | 遥操离线机制 | **修订定案（2026-11-07 反馈）**：RUNNING 内超 `offline_timeout_ms`（默认 300ms）无 `source=teleop` 动作 → 判定操作台离线，**停止并保持**（不回退策略）并发布 `teleop/offline`；重新接管须显式 `resume` command 帧 |
 | U9 | 配置项范围 | 建议：`teleop.actions_topic/observations_topic/actions_rate_hz/offline_timeout_ms` + `collection.record/output_dir`；待评审 |
 | U10 | 会话生命周期承载方式 | **修订定案（2026-11-06）**：取消五个独立生命周期话题，生命周期以 `teleop/actions` 内 `command` 帧（TeleopControl）承载；非 RUNNING 态不接收&执行 `source=teleop` 动作 |
 | U11 | client 实现归属 | **修订定案（2026-11-06 管理面/console 研讨）**：遥操相关功能全部在 r2c 包内实现——机器人端增量在 client 执行路径，操作端走独立入口（`cloudrobo r2c teleop`）与独立配置文件；不新建独立 teleop 包（§11） |
