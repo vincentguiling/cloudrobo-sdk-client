@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的遥操"特性的功能设计（数据采集已裁撤，见非目标）；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v2.3，待评审**。v2.3（2026-11-07 反馈）：**`teleop/actions` 语义收窄**——只承载遥操（频率由配置指定），包含遥操生命周期控制 + 单 chunk 遥操动作；**job 与单 chunk 推理动作不再上该话题**（job/action 保留不动、单 chunk 推理动作仍走 `inference/actions`），`source` 字段随之取消。v2.2（2026-11-07 反馈）：§3.3.1.6 补充**本地场景（无 bundle）推流设计**——自托管 LiveKit（操作端本地构造 CAMERA_START、JWT 本地自签，复用同一 StreamPublisher 路径）/ 主从臂旁默认无需推流（可本地 LiveKit 或窗口直显）/ 云场景不变。v2.1（2026-11-07 反馈）：友商分析补充 **Dora**（数据流框架，操作端节点化形态参考）与 **PhyAgentOS**（Session 模型与分层安全链参考）的分析对比。v2.0（2026-11-07 反馈）：①**同构臂发送关节绝对位置、VR 发送绝对位姿**（非相对/增量映射）；②**VR 位姿初始值 = `inference/observations` 的指定位姿**（按名字指定，如 `end_effector_poses.<name>`）——VR 首帧把头显/手柄坐标系对到该绝对位姿，之后绝对位姿直接驱动。v1.9（2026-11-07 反馈）：①**去掉 `source=teleop` 标记**——`teleop/actions` 上遥操动作不再带来源标记（仅 job/单 chunk 推理动作保留 `source=job`/`source=policy`，遥操动作即该话题上无 `source` 标注的动作）；②**遥操下发频率改为配置指定**（`teleop.actions_rate_hz`，不再固定 配置频率）。v1.8：v1.8（2026-11-07 反馈）：**`teleop/observations` 不发布**（话题与全部相关设计移除，U2/U5 撤销）；概念对齐——**本地操作台暂不存在，不写出**；**监控大屏概念改为"监控大屏"**（观看端=监控大屏/云端控制台/VR 客户端，均经 LiveKit 拉流）。v1.7（2026-11-07 反馈）：**离线相关机制暂不实现，移入遗留待讨论**（§9）——执行规则收敛为单层会话门控（IDLE/FINISHED 只执行策略动作；PAUSED 都不执行；RUNNING 只执行遥操动作），移除 teleop/offline 事件、offline_timeout_ms 配置与 teleop_online/offline 子态。v1.6（2026-11-07 反馈）：**执行来源规则修订**——IDLE/FINISHED 只执行策略动作（`inference/actions`）；PAUSED 都不执行；**其余状态（含遥操离线）只执行遥操动作**——遥操离线时机器人**保持位姿并告警/提示重新接管，不再自动切回策略模式**（取消"离线自动交还策略"，改为"离线保持 + 事件提示"，交还由显式 `finish`/`quit` command 帧驱动）。v1.5：v1.5（2026-11-07 反馈）：§3.3.1.6 视频回传刷新——遥操推流**已在官方最新代码实现**（r2c `camera` 模块：LiveKit WebRTC 推流 + `job/command` CAMERA_START/STOP/RTC_TOKEN_RENEW 命令 + JWT 自动续签 + 相机能力上报），特性设计直接复用。v1.4（2026-11-07 定案）：动作话题布局修订——**`inference/actions` 保持不变**（策略流式通路零迁移）；**移除 `job/action`**；**新增 `teleop/actions`** 承载遥操动作（频率由配置 teleop.actions_rate_hz 指定）+ job 任务动作 + 单 chunk 推理动作，生命周期经话题内 `command` 帧承载。此前 v1.3：砍掉数据采集功能（详见 git 历史）；v1.2 曾讨论三话题合并为一（本版修订其合并范围）。v1.3（2026-11-06 反馈）：**砍掉数据采集功能**——移除本地录制（R2CR）与 LeRobot v2.1/v3 格式转换、采集配置与录制相关测试/决策点；生命周期不再与录制耦合；`teleop/observations` 保留本地发布供操作台反馈；数据采集列为非目标（后续如需另行立项）。v1.2（2026-11-06，管理面/console 研讨结论）：①**动作话题合并**——遥操动作、策略动作、任务（job）动作统一到**统一动作话题** `{p}/{d}/teleop/actions`，消息携带 `source`（policy/job/teleop）与 `command`（start/pause/resume/finish/quit）字段，生命周期由 command 帧承载；②**遥操相关功能在 r2c 包内实现**（不同入口/不同配置文件），独立 teleop 包方案否决（§11 定案）。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**，本文档按保留实现对齐（已实现 = 主从臂 + mock_joints 源、局域网现场遥操）。只出设计，不含实现。
+> 状态：**v2.4，待评审**。v2.4：本次不考虑本地推流机制，视频回传仅复用现有云端命令驱动的推流路径。v2.3（2026-11-07 反馈）：**`teleop/actions` 语义收窄**——只承载遥操（频率由配置指定），包含遥操生命周期控制 + 单 chunk 遥操动作；**job 与单 chunk 推理动作不再上该话题**（job/action 保留不动、单 chunk 推理动作仍走 `inference/actions`），`source` 字段随之取消。v2.1（2026-11-07 反馈）：友商分析补充 **Dora**（数据流框架，操作端节点化形态参考）与 **PhyAgentOS**（Session 模型与分层安全链参考）的分析对比。v2.0（2026-11-07 反馈）：①**同构臂发送关节绝对位置、VR 发送绝对位姿**（非相对/增量映射）；②**VR 位姿初始值 = `inference/observations` 的指定位姿**（按名字指定，如 `end_effector_poses.<name>`）——VR 首帧把头显/手柄坐标系对到该绝对位姿，之后绝对位姿直接驱动。v1.9（2026-11-07 反馈）：①**去掉 `source=teleop` 标记**——`teleop/actions` 上遥操动作不再带来源标记（仅 job/单 chunk 推理动作保留 `source=job`/`source=policy`，遥操动作即该话题上无 `source` 标注的动作）；②**遥操下发频率改为配置指定**（`teleop.actions_rate_hz`，不再固定 配置频率）。v1.8：v1.8（2026-11-07 反馈）：**`teleop/observations` 不发布**（话题与全部相关设计移除，U2/U5 撤销）；概念对齐——**本地操作台暂不存在，不写出**；**监控大屏概念改为"监控大屏"**（观看端=监控大屏/云端控制台/VR 客户端，均经 LiveKit 拉流）。v1.7（2026-11-07 反馈）：**离线相关机制暂不实现，移入遗留待讨论**（§9）——执行规则收敛为单层会话门控（IDLE/FINISHED 只执行策略动作；PAUSED 都不执行；RUNNING 只执行遥操动作），移除 teleop/offline 事件、offline_timeout_ms 配置与 teleop_online/offline 子态。v1.6（2026-11-07 反馈）：**执行来源规则修订**——IDLE/FINISHED 只执行策略动作（`inference/actions`）；PAUSED 都不执行；**其余状态（含遥操离线）只执行遥操动作**——遥操离线时机器人**保持位姿并告警/提示重新接管，不再自动切回策略模式**（取消"离线自动交还策略"，改为"离线保持 + 事件提示"，交还由显式 `finish`/`quit` command 帧驱动）。v1.5：v1.5（2026-11-07 反馈）：§3.3.1.6 视频回传刷新——遥操推流**已在官方最新代码实现**（r2c `camera` 模块：LiveKit WebRTC 推流 + `job/command` CAMERA_START/STOP/RTC_TOKEN_RENEW 命令 + JWT 自动续签 + 相机能力上报），特性设计直接复用。v1.4（2026-11-07 定案）：动作话题布局修订——**`inference/actions` 保持不变**（策略流式通路零迁移）；**移除 `job/action`**；**新增 `teleop/actions`** 承载遥操动作（频率由配置 teleop.actions_rate_hz 指定）+ job 任务动作 + 单 chunk 推理动作，生命周期经话题内 `command` 帧承载。此前 v1.3：砍掉数据采集功能（详见 git 历史）；v1.2 曾讨论三话题合并为一（本版修订其合并范围）。v1.3（2026-11-06 反馈）：**砍掉数据采集功能**——移除本地录制（R2CR）与 LeRobot v2.1/v3 格式转换、采集配置与录制相关测试/决策点；生命周期不再与录制耦合；`teleop/observations` 保留本地发布供操作台反馈；数据采集列为非目标（后续如需另行立项）。v1.2（2026-11-06，管理面/console 研讨结论）：①**动作话题合并**——遥操动作、策略动作、任务（job）动作统一到**统一动作话题** `{p}/{d}/teleop/actions`，消息携带 `source`（policy/job/teleop）与 `command`（start/pause/resume/finish/quit）字段，生命周期由 command 帧承载；②**遥操相关功能在 r2c 包内实现**（不同入口/不同配置文件），独立 teleop 包方案否决（§11 定案）。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**，本文档按保留实现对齐（已实现 = 主从臂 + mock_joints 源、局域网现场遥操）。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -23,7 +23,7 @@
 - 图像经推拉流上云（LiveKit，官方 camera 模块）；
 - 配置最小化（客户端新增 ≤ 5 项，均有默认值）。
 
-**非目标**（本版本不做）：**遥操离线机制**（离线判定/停止保持/自动交还策略——待讨论，见 §9）；**数据采集**（本地端录制 R2CR、LeRobot v2.1/v3 导出、回放——2026-11-06 裁撤，后续如需另行立项）；客户端内建接管权限体系（由 Zenoh ACL/发布端承担）；推拉流云侧服务（LiveKit SFU）运维——端侧推流已实现（camera 模块，§3.3.1.6），本特性直接复用；云端 episode 浏览/标注；多机器人协同遥操。
+**非目标**（本版本不做）：本地推流机制；**遥操离线机制**（离线判定/停止保持/自动交还策略——待讨论，见 §9）；**数据采集**（本地端录制 R2CR、LeRobot v2.1/v3 导出、回放——2026-11-06 裁撤，后续如需另行立项）；客户端内建接管权限体系（由 Zenoh ACL/发布端承担）；推拉流云侧服务（LiveKit SFU）运维——端侧推流已实现（camera 模块，§3.3.1.6），本特性直接复用；云端 episode 浏览/标注；多机器人协同遥操。
 
 ## 2. 需求分析
 
@@ -85,7 +85,7 @@
 **约束**：
 - C1 动作话题布局：`inference/actions` 保持不变；`teleop/actions` 只承载遥操（频率由配置指定）：动作 + 生命周期 `command` 帧 + 单 chunk 遥操动作；生命周期以 `command` 帧（`TeleopControl`）承载，不再使用独立生命周期话题；
 - C2 客户端**不区分**本地/远程遥操，同一 `teleop/actions` 与同一执行路径；
-- C3 图像通过**推拉流**上云（复用官方 `camera` 模块 LiveKit 实现，§3.3.1.6）；无 bundle 的本地场景按 §3.3.1.6"本地场景"分层处理；
+- C3 图像通过**推拉流**上云（复用官方 `camera` 模块 LiveKit 实现，§3.3.1.6）；本次不考虑本地推流机制；
 - C5 遥操输入两类（绝对量）：同构臂（关节绝对位置，位姿预对齐）与 VR（绝对位姿，初始值 = `inference/observations` 指定位姿）；
 - C6 数据采集为非目标（2026-11-06 裁撤）：本地录制、格式转换、回放均不在本期范围；
 - C7 遥操功能**全部在 r2c 包内实现**（机器人端增量在 client 执行路径；操作端走独立入口 `cloudrobo r2c teleop` 与独立配置文件），不新建包；
@@ -242,16 +242,6 @@ VR 客户端发送**绝对位姿**（非相对/增量）：①**初始值** = `i
 | 编码 | 默认 640×480；宽/高/帧率/码率可配（TrackPublishOptions max_framerate/max_bitrate + SFU REMB） |
 | 观看端 | LiveKit Room 拉流：①**监控大屏**；②云端控制台；③**VR 客户端（Quest）拉流观看**（对齐 metaquest `teleop/{session}/video` 语义，不经 Zenoh 话题） |
 | 与控制流隔离 | 视频与 `teleop/actions`（Zenoh）完全独立通道，互不阻塞；视频中断不影响遥操控制（§4） |
-
-'**本地场景（无 bundle/无云凭证）的推流实现**：`CAMERA_START` 的 wss URL/JWT 由云端下发——没有 bundle（本地 VR 遥操、本地主从臂遥操）时无云端命令与凭证，推流按以下分层处理：
-
-| 场景 | 推流实现 |
-|------|----------|
-| 本地 VR 遥操（Quest 需看画面） | **自托管 LiveKit**：在机器人端或操作端 PC 局域网内部署 LiveKit 服务（`livekit/livekit-server`，单容器）；`teleop_operator.yaml` 直接配置 `livekit: {url: ws://<host>:7880, api_key, api_secret}`，操作端入口**本地构造** `CameraCommand{CAMERA_START}`（JWT 由本地 api_key 自签）并直接调用 `CameraManager.start_streaming`——`StreamPublisher` 代码路径与云场景完全相同，仅命令来源从"云端 job/command"变为"本地配置"；Quest 连同一 Room 拉流 |
-| 本地主从臂遥操（操作员在机器人旁） | 默认**无需推流**——操作员目视即可；如需记录/回看画面，用与上行相同的本地 LiveKit 方案（画面进 Room 供大屏回看），或退化为本地窗口直显（`ICameraFrameSource.get_latest_frame` → 操作端本地 OpenCV 窗口，零网络依赖） |
-| 云场景（有 bundle） | 现有路径不变：云端下发 `CAMERA_START`（JWT+wss 由平台签发），见上表 |
-
-**设计要点**：三种场景共用同一 `StreamPublisher`/`CameraManager` 代码路径，差异仅在 `CameraCommand` 的**来源**（云端下发 vs 操作端本地构造）与 **JWT 签发方**（平台 vs 本地 api_key 自签）；`camera` 模块无需为此改动。
 
 '**观看端与反馈语义**：监控大屏与 VR 客户端**通过视频获得视觉反馈**，因此视频时延直接决定遥操手感''——端到端时延目标 ≤300ms（与 `offline_timeout_ms` 同量级，避免视频滞后引发误判）；时延测量与调优列入遗留问题（§9）。
 #### 3.3.2 VR客户端功能实现
