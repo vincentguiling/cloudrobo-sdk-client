@@ -2,7 +2,7 @@
 
 > 本文件负责"基于 r2c 的遥操"特性的功能设计（数据采集已裁撤，见非目标）；不属于本文件的内容：设备树特性设计见 [PR #1 的 r2c-multi-device-tree-design.md](https://github.com/vincentguiling/cloudrobo-sdk-client/blob/agent/research-r2c-multidevice-d6cf83e2c104/docs/design/r2c-multi-device-tree-design.md)（该文档合入后改为仓库内相对路径），业界调研见 `docs/research/r2c-multi-device-industry-survey.md`，代码现状见 `docs/research/cloudrobo-r2c-codebase-survey.md`。
 >
-> 状态：**v2.6，待评审**。v2.6（2026-11-10 反馈）：①§3.3.1.5 补充**遥操协议时序**（mermaid：控制帧 RELIABLE / 动作帧 BEST_EFFORT / session_id 校验全流程）；②§3.2 新增**接口形态方案对比**（独立 `teleop/actions` vs 并入 send_command，U15 复核维持独立）与**可遥操能力标识**（`device/teleop_capability` 上报）。v2.5（2026-11-09 反馈）：①移除本地（现场）遥操；②设备圈定——操作端 = **Meta Quest 3**、目标机器人 = **智元 A2D**；③新增**遥操接管/退出与 policy 推理交互 mermaid 时序图**；④新增**面向机器人的接入接口**（§3.3.3，以 A2D 为例）；⑤新增**遥操协议设计（protobuf）**（§3.3.1.5）；⑥新增**遥操 App 方案**（§3.3.2.8）。v2.4：本次不考虑本地推流机制，视频回传仅复用现有云端命令驱动的推流路径。v2.3（2026-11-07 反馈）：**`teleop/actions` 语义收窄**——只承载遥操（频率由配置指定），包含遥操生命周期控制 + 单 chunk 遥操动作；**job 与单 chunk 推理动作不再上该话题**（job/action 保留不动、单 chunk 推理动作仍走 `inference/actions`），`source` 字段随之取消。v2.1（2026-11-07 反馈）：友商分析补充 **Dora**（数据流框架，操作端节点化形态参考）与 **PhyAgentOS**（Session 模型与分层安全链参考）的分析对比。v2.0（2026-11-07 反馈）：①**同构臂发送关节绝对位置、VR 发送绝对位姿**（非相对/增量映射）；②**VR 位姿初始值 = `inference/observations` 的指定位姿**（按名字指定，如 `end_effector_poses.<name>`）——VR 首帧把头显/手柄坐标系对到该绝对位姿，之后绝对位姿直接驱动。v1.9（2026-11-07 反馈）：①**去掉 `source=teleop` 标记**——`teleop/actions` 上遥操动作不再带来源标记（仅 job/单 chunk 推理动作保留 `source=job`/`source=policy`，遥操动作即该话题上无 `source` 标注的动作）；②**遥操下发频率改为配置指定**（`teleop.actions_rate_hz`，不再固定 配置频率）。v1.8：v1.8（2026-11-07 反馈）：**`teleop/observations` 不发布**（话题与全部相关设计移除，U2/U5 撤销）；概念对齐——**本地操作台暂不存在，不写出**；**监控大屏概念改为"监控大屏"**（观看端=监控大屏/云端控制台/VR 客户端，均经 LiveKit 拉流）。v1.7（2026-11-07 反馈）：**离线相关机制暂不实现，移入遗留待讨论**（§9）——执行规则收敛为单层会话门控（IDLE/FINISHED 只执行策略动作；PAUSED 都不执行；RUNNING 只执行遥操动作），移除 teleop/offline 事件、offline_timeout_ms 配置与 teleop_online/offline 子态。v1.6（2026-11-07 反馈）：**执行来源规则修订**——IDLE/FINISHED 只执行策略动作（`inference/actions`）；PAUSED 都不执行；**其余状态（含遥操离线）只执行遥操动作**——遥操离线时机器人**保持位姿并告警/提示重新接管，不再自动切回策略模式**（取消"离线自动交还策略"，改为"离线保持 + 事件提示"，交还由显式 `finish`/`quit` command 帧驱动）。v1.5：v1.5（2026-11-07 反馈）：§3.3.1.6 视频回传刷新——遥操推流**已在官方最新代码实现**（r2c `camera` 模块：LiveKit WebRTC 推流 + `job/command` CAMERA_START/STOP/RTC_TOKEN_RENEW 命令 + JWT 自动续签 + 相机能力上报），特性设计直接复用。v1.4（2026-11-07 定案）：动作话题布局修订——**`inference/actions` 保持不变**（策略流式通路零迁移）；**移除 `job/action`**；**新增 `teleop/actions`** 承载遥操动作（频率由配置 teleop.actions_rate_hz 指定）+ job 任务动作 + 单 chunk 推理动作，生命周期经话题内 `command` 帧承载。此前 v1.3：砍掉数据采集功能（详见 git 历史）；v1.2 曾讨论三话题合并为一（本版修订其合并范围）。v1.3（2026-11-06 反馈）：**砍掉数据采集功能**——移除本地录制（R2CR）与 LeRobot v2.1/v3 格式转换、采集配置与录制相关测试/决策点；生命周期不再与录制耦合；`teleop/observations` 保留本地发布供操作台反馈；数据采集列为非目标（后续如需另行立项）。v1.2（2026-11-06，管理面/console 研讨结论）：①**动作话题合并**——遥操动作、策略动作、任务（job）动作统一到**统一动作话题** `{p}/{d}/teleop/actions`，消息携带 `source`（policy/job/teleop）与 `command`（start/pause/resume/finish/quit）字段，生命周期由 command 帧承载；②**遥操相关功能在 r2c 包内实现**（不同入口/不同配置文件），独立 teleop 包方案否决（§11 定案）。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**，本文档按保留实现对齐（已实现 = 主从臂 + mock_joints 源、局域网现场遥操）。只出设计，不含实现。
+> 状态：**v2.7，待评审**。v2.7（2026-11-10 反馈更正）：**重写接口形态方案对比**——两方案均经 `teleop/actions` 下发遥操，差异在**机器人适配器承接遥操命令的接口**：方案 A 适配器新增专用接口 `teleop_cmd`（接口存在即客观标识可遥操），方案 B 复用适配器现有 `send_command`（零新增，但需清单显式声明可遥操）；U15 改为分阶段建议（验证期 B、规模化后 A）。v2.6（2026-11-10 反馈）：①§3.3.1.5 补充**遥操协议时序**（mermaid：控制帧 RELIABLE / 动作帧 BEST_EFFORT / session_id 校验全流程）；②§3.2 新增**接口形态方案对比**（独立 `teleop/actions` vs 并入 send_command，U15 复核维持独立）与**可遥操能力标识**（`device/teleop_capability` 上报）。v2.5（2026-11-09 反馈）：①移除本地（现场）遥操；②设备圈定——操作端 = **Meta Quest 3**、目标机器人 = **智元 A2D**；③新增**遥操接管/退出与 policy 推理交互 mermaid 时序图**；④新增**面向机器人的接入接口**（§3.3.3，以 A2D 为例）；⑤新增**遥操协议设计（protobuf）**（§3.3.1.5）；⑥新增**遥操 App 方案**（§3.3.2.8）。v2.4：本次不考虑本地推流机制，视频回传仅复用现有云端命令驱动的推流路径。v2.3（2026-11-07 反馈）：**`teleop/actions` 语义收窄**——只承载遥操（频率由配置指定），包含遥操生命周期控制 + 单 chunk 遥操动作；**job 与单 chunk 推理动作不再上该话题**（job/action 保留不动、单 chunk 推理动作仍走 `inference/actions`），`source` 字段随之取消。v2.1（2026-11-07 反馈）：友商分析补充 **Dora**（数据流框架，操作端节点化形态参考）与 **PhyAgentOS**（Session 模型与分层安全链参考）的分析对比。v2.0（2026-11-07 反馈）：①**同构臂发送关节绝对位置、VR 发送绝对位姿**（非相对/增量映射）；②**VR 位姿初始值 = `inference/observations` 的指定位姿**（按名字指定，如 `end_effector_poses.<name>`）——VR 首帧把头显/手柄坐标系对到该绝对位姿，之后绝对位姿直接驱动。v1.9（2026-11-07 反馈）：①**去掉 `source=teleop` 标记**——`teleop/actions` 上遥操动作不再带来源标记（仅 job/单 chunk 推理动作保留 `source=job`/`source=policy`，遥操动作即该话题上无 `source` 标注的动作）；②**遥操下发频率改为配置指定**（`teleop.actions_rate_hz`，不再固定 配置频率）。v1.8：v1.8（2026-11-07 反馈）：**`teleop/observations` 不发布**（话题与全部相关设计移除，U2/U5 撤销）；概念对齐——**本地操作台暂不存在，不写出**；**监控大屏概念改为"监控大屏"**（观看端=监控大屏/云端控制台/VR 客户端，均经 LiveKit 拉流）。v1.7（2026-11-07 反馈）：**离线相关机制暂不实现，移入遗留待讨论**（§9）——执行规则收敛为单层会话门控（IDLE/FINISHED 只执行策略动作；PAUSED 都不执行；RUNNING 只执行遥操动作），移除 teleop/offline 事件、offline_timeout_ms 配置与 teleop_online/offline 子态。v1.6（2026-11-07 反馈）：**执行来源规则修订**——IDLE/FINISHED 只执行策略动作（`inference/actions`）；PAUSED 都不执行；**其余状态（含遥操离线）只执行遥操动作**——遥操离线时机器人**保持位姿并告警/提示重新接管，不再自动切回策略模式**（取消"离线自动交还策略"，改为"离线保持 + 事件提示"，交还由显式 `finish`/`quit` command 帧驱动）。v1.5：v1.5（2026-11-07 反馈）：§3.3.1.6 视频回传刷新——遥操推流**已在官方最新代码实现**（r2c `camera` 模块：LiveKit WebRTC 推流 + `job/command` CAMERA_START/STOP/RTC_TOKEN_RENEW 命令 + JWT 自动续签 + 相机能力上报），特性设计直接复用。v1.4（2026-11-07 定案）：动作话题布局修订——**`inference/actions` 保持不变**（策略流式通路零迁移）；**移除 `job/action`**；**新增 `teleop/actions`** 承载遥操动作（频率由配置 teleop.actions_rate_hz 指定）+ job 任务动作 + 单 chunk 推理动作，生命周期经话题内 `command` 帧承载。此前 v1.3：砍掉数据采集功能（详见 git 历史）；v1.2 曾讨论三话题合并为一（本版修订其合并范围）。v1.3（2026-11-06 反馈）：**砍掉数据采集功能**——移除本地录制（R2CR）与 LeRobot v2.1/v3 格式转换、采集配置与录制相关测试/决策点；生命周期不再与录制耦合；`teleop/observations` 保留本地发布供操作台反馈；数据采集列为非目标（后续如需另行立项）。v1.2（2026-11-06，管理面/console 研讨结论）：①**动作话题合并**——遥操动作、策略动作、任务（job）动作统一到**统一动作话题** `{p}/{d}/teleop/actions`，消息携带 `source`（policy/job/teleop）与 `command`（start/pause/resume/finish/quit）字段，生命周期由 command 帧承载；②**遥操相关功能在 r2c 包内实现**（不同入口/不同配置文件），独立 teleop 包方案否决（§11 定案）。实现范围（2026-11-05 决策）：**VR 输入与云端实时遥操（远程遥操）为原始需求但仍在设计阶段——实现已从 PR #2 移除**，本文档按保留实现对齐（已实现 = 主从臂 + mock_joints 源、局域网现场遥操）。只出设计，不含实现。
 
 ## 1. 特性概述
 
@@ -115,26 +115,26 @@
 | 采集 | 本期不做（非目标，2026-11-06 裁撤） | — |
 | 实现归属 | **全部在 r2c 包内**：机器人端增量在 client 执行路径；操作端走独立入口与配置文件（§11 定案） | 管理面/console 研讨结论：不新建包 |
 
-**接口形态方案对比（2026-11-10）：遥操接口独立 vs 并入 send_command**：
+**接口形态方案对比（2026-11-10 更正）：适配器承接遥操命令——专用 teleop_cmd vs 复用 send_command**：
 
-| 维度 | 方案 A：独立接口（现状定案，`teleop/actions`） | 方案 B：并入 send_command（推理动作下发接口，字段区分） |
-|------|--------------------------------------------|------------------------------------------------------|
-| 策略通路影响 | **零改动**（推理动作话题/接口/消息均不动） | 推理动作接口需加来源字段并修改其执行路径判别 |
-| 会话门控 | 按话题分流，订阅与执行逻辑边界清晰 | 单接口内按字段分流，现有执行路径处处插入分支 |
-| 安全/ACL | 独立话题可单独设 ACL（操作端凭证只可写 `teleop/actions`），遥操权限与策略权限分离 | 同接口同权限，能发策略动作即能遥操（ACL 粒度变粗），需接口内二次鉴权 |
-| QoS/频率 | 遥操高频 BEST_EFFORT 与策略流互不影响 | 混流同一接口，QoS/频率策略取交集 |
-| 云侧/console | 流量与语义天然区分 | 需解析字段才能区分遥操与策略 |
-| 演进 | 遥操可独立演进（SafetyMeta/心跳/能力字段），不触碰策略契约 | 遥操每次演进都改共享契约，波及现网 |
-| 结论 | **维持（U15 复核定案）** | 否决：ACL 粒度粗 + 共享契约耦合 + 波及现网 |
+> 前提：两方案的**传输与协议完全相同**——遥操动作都经 `teleop/actions` 下发（§3.3.1.5 时序不变）；差异仅在**机器人适配器侧由哪个接口承接**遥操命令（§3.3.3 落到适配器实现）。
 
-**可遥操能力标识（两方案共同前置）**：操作端/云端如何知道"这台机器人可遥操"——客户端启动时**主动上报能力**，参照现有 `device/camera_capability` 模式新增 **`device/teleop_capability`** 上报：
+| 维度 | 方案 A：适配器新增专用接口 `teleop_cmd` | 方案 B：复用适配器现有 `send_command` |
+|------|--------------------------------------|--------------------------------------|
+| 适配器接入成本 | 每款机型需额外实现一个接口（teleop_cmd：接收遥操动作/控制并驱动执行） | **零新增**——已实现 send_command（推理动作下发）的机型即可承接遥操命令 |
+| **可遥操判定（如何知道该机器人可遥操）** | **客观探测**：适配器实现了 `teleop_cmd` 即支持遥操（接口/entry-point 存在性判断，不会失真） | 接口本身人人都有，无法从存在性判断——需在适配器清单/配置中**显式声明** `teleop_supported`（人工维护，存在声明与实现不一致的风险） |
+| 语义清晰度 | 遥操语义（末端位姿→IK、SafetyMeta、离合保持）独立成契约，实现内聚 | `send_command` 内需为遥操加分支，推理与遥操语义耦合 |
+| 演进 | 遥操契约可独立演进（新增能力字段不动推理通路） | 遥操每次演进都改 `send_command` 共享契约，波及推理链路 |
+| 权限控制 | 相同：都在话题层（`teleop/actions` 的 Zenoh ACL，操作端专用凭证），非适配器层差异 | 相同 |
+| 适用阶段 | 多机型规模化、正式版 | 单机型快速打通 / 验证期 |
 
-`{teleop_supported: true, input_modes: [VR], end_effectors: [<initial_pose_ref 可用名列表>], suggested_rate_hz, protocol_version}`
+**建议（U15，分阶段）**：验证期（本期圈定智元 A2D 一款）先用**方案 B** 复用 `send_command` 快速打通（`teleop_capability` 由适配器清单显式声明）；多机型规模化后引入**方案 A** 的 `teleop_cmd` 专用接口（`teleop_capability` 改为接口探测，判定客观化）。
 
-- 云端 console / 操作端机器人列表按此过滤：未上报或 `teleop_supported=false` = 不可遥操（不展示接管入口）；
-- 能力真假由 §3.3.3 接入实现决定（R1–R7 具备则上报 true，R7 增加本上报）；
-- 多机场景同一用户可据 capability 列表选择目标机器人；协议演进经 `protocol_version` 协商，两端版本不一致时 App 提示升级。
+**可遥操能力上报（两方案共同出口）**：判定来源随方案不同（A=接口探测，B=清单声明），但对外的上报形态一致——客户端启动时经 **`device/teleop_capability`** 上报：
 
+`{teleop_supported: true, input_modes: [VR], end_effectors: [<initial_pose_ref 可用名列表>], suggested_rate_hz, protocol_version, capability_source: adapter_interface | adapter_manifest}`
+
+云端 console / 操作端机器人列表按此过滤：未上报或 `teleop_supported=false` = 不可遥操（不展示接管入口）；协议演进经 `protocol_version` 协商。
 **整体架构**：
 
 ```text
@@ -451,7 +451,7 @@ sequenceDiagram
 
 #### 3.3.3 面向机器人的接入接口（一款机器人支持远程遥操要实现什么）
 
-> 以目标机器人**智元 A2D**（AgiBot 远征 A2 系列：轮式底盘 + 双臂 + 头部/腕部相机）为例。接口由 r2c 硬件适配器（adapter）承载；厂商 SDK/ROS 2 具体接口名以官方文档为准。
+> 以目标机器人**智元 A2D**（AgiBot 远征 A2 系列：轮式底盘 + 双臂 + 头部/腕部相机）为例。接口由 r2c 硬件适配器（adapter）承载；厂商 SDK/ROS 2 具体接口名以官方文档为准。适配器承接遥操命令的接口形态（专用 `teleop_cmd` vs 复用 `send_command`）见 §3.2 方案对比（U15）。
 
 | # | 接口 | 要求 | A2D 侧落点 |
 |---|------|------|-----------|
@@ -461,7 +461,7 @@ sequenceDiagram
 | R4 | **相机帧源** | 实现 `ICameraFrameSource.get_latest_frame(camera_id)`：头部/腕部相机逐路出帧 → 官方 camera 模块 LiveKit 推流（§3.3.1.6） | A2D 相机取流适配（OpenCV/MediaSDK） |
 | R5 | **传输接入** | Zenoh session：远程经 Router（公网 + TLS），凭证/ACL 由平台下发；话题命名 `{project_id}/{device_id}/…` 遵循现有约定 | r2c client 配置，无需厂商参与 |
 | R6 | **安全接口** | 任意时刻可停：`command=pause/quit` 即停并保持位姿；deadman 超时兜底；硬件急停回路保留；SafetyMonitor 最终拦截（§5） | A2D 急停/伺服使能接口 |
-| R7 | **生命周期上报** | `device/camera_capability` 能力上报；**`device/teleop_capability` 可遥操能力上报（§3.2，R1–R6 具备则上报）**；`job/command` 的 CAMERA_START/STOP/RTC_TOKEN_RENEW 执行；`state/*`（joint_states/heartbeats）上报 | r2c camera/state 现有通路，适配器提供帧与状态即可 |
+| R7 | **生命周期上报** | `device/camera_capability` 能力上报；**`device/teleop_capability` 可遥操能力上报（§3.2；判定来源随 U15 方案：实现 teleop_cmd=接口探测 / 复用 send_command=清单声明）**；`job/command` 的 CAMERA_START/STOP/RTC_TOKEN_RENEW 执行；`state/*`（joint_states/heartbeats）上报 | r2c camera/state 现有通路，适配器提供帧与状态即可 |
 
 **结论**：厂商机器人只要提供 ①关节/末端状态读取、②关节伺服下发（或接受末端目标由 r2c 解算）、③相机取流、④急停/保持四类能力，即可经 r2c 适配器获得远程遥操（Quest 3 接管 + 视频回传）全部能力；话题、协议（§3.3.1.5）、会话门控与安全由 r2c 统一承载，机器人侧不感知云。
 
@@ -562,7 +562,7 @@ teleop:
 | U11 | client 实现归属 | **修订定案（2026-11-06 管理面/console 研讨）**：遥操相关功能全部在 r2c 包内实现——机器人端增量在 client 执行路径，操作端走独立入口（`cloudrobo r2c teleop`）与独立配置文件；不新建独立 teleop 包（§11） |
 | U13 | VR 客户端实现路线 | **修订（2026-11-09）**：Quest 3 Unity + OpenXR App（App 方案 §3.3.2.8）；**绝对位姿映射 + 离合重锚定** + deadman + 振动反馈；详见 §3.3.2 |
 | U14 | 设备圈定 | **定案（2026-11-09 反馈）**：操作端设备 = Meta Quest 3；目标机器人 = 智元 A2D；本地（现场）遥操与同构臂输入移出本期范围 |
-| U15 | 遥操接口形态 | **复核维持定案（2026-11-10）**：独立 `teleop/actions` 话题（方案 A）——零侵入策略通路、独立 ACL/QoS、可独立演进；并入 send_command（方案 B）因 ACL 粒度粗、共享契约耦合被否（§3.2 对比）。可遥操标识：`device/teleop_capability` 上报 |
+| U15 | 适配器承接遥操命令的接口形态 | **待评审（2026-11-10 更正）**：两方案均经 `teleop/actions` 下发——方案 A 适配器新增 `teleop_cmd` 专用接口（可遥操判定客观：接口探测）、方案 B 复用 `send_command`（零新增，判定靠清单声明）；建议分阶段：验证期 B 打通 A2D，规模化后演进 A（§3.2 对比） |
 
 ## 11. 实现归属：r2c 包内实现（定案）
 
