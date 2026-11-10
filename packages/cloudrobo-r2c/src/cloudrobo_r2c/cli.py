@@ -29,3 +29,18 @@ def client(argv: tuple[str, ...]) -> None:
     from .cloudroboclient import main as client_main
 
     client_main(list(argv))
+
+
+# 启动遥操操作端 cloudrobo r2c teleop 命令（主从臂 / VR，现场与远程遥操）
+@r2c.command("teleop", context_settings={"ignore_unknown_options": True})
+@click.argument("argv", nargs=-1, type=click.UNPROCESSED)
+def teleop(argv: tuple[str, ...]) -> None:
+    """Run the R2C teleop operator (leader arm / VR input → Actions).
+
+    All extra arguments are forwarded to the underlying argparse entry point.
+    Example: cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \\
+        --endpoints tcp/192.168.1.100:7447 --record teleop_session.r2cr
+    """
+    from .teleop.cli import main as teleop_main
+
+    teleop_main(list(argv))
