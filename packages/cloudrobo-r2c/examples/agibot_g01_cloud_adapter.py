@@ -15,8 +15,8 @@
 
 - 组 3 ``ch8_pose(joint_states位姿)``：names = ``["left_pose", "right_pose"]``，
   position 为两个 7 维位姿 ``[x,y,z,qx,qy,qz,qw]`` → ``set_end_effector_pose_control``
-- 组 4 ``ch8_pose(ee通道)``：joint_states 保持当前关节，位姿经 ``end_effector_poses``
-  通道下发（演示双通道兜底：joint_states 位姿存在时优先）
+- 组 4 ``ch8_pose(ee通道)``：位姿经 ``end_effector_poses`` 通道下发（关节与末端
+  互斥，故 joint_states 仅携带夹爪逐维分量，不含关节分量）
 - 组 5 ``ch8_joints(组名关节)``：names = ``["left_arm", "right_arm"]``，position 按每组
   7 关节解析 → ``set_joint_position_control``
 - 位姿目标 = 观测中的当前末端位姿（``end_effector_poses``）+ z 向偏移（默认 +5cm），
@@ -417,7 +417,8 @@ class ThreeGroupActionCycler:
         current_gripper: Optional[Sequence[float]],
         current_poses: Optional[Dict[str, Sequence[float]]],
     ) -> Optional[Actions]:
-        """组 E：末端位姿经 end_effector_poses.pose 通道（joint_states 保持当前关节）。"""
+        """组 E：末端位姿经 end_effector_poses.pose 通道（关节与末端互斥，故
+        joint_states 仅携带夹爪分量，不携带关节分量）。"""
         poses = current_poses or {}
         left = poses.get("left")
         right = poses.get("right")
@@ -429,19 +430,19 @@ class ThreeGroupActionCycler:
             )
             return None
         offset = group["pose_offset"]
-        hold_joints = list(current_joints) if current_joints else [0.0] * ARM_DOF
         hold_gripper = list(current_gripper) if current_gripper else [0.5, 0.8]
 
         payload: Dict[str, Any] = {
             "timestamp": now_ms,
             "chunk_size": self._steps,
             "joint_states": {
-                "names": list(JOINT_NAMES),  # 关节名路由 → 第 7 章（保持不动）
-                "position": self._hold_chunk(hold_joints, self._steps),
+                # 关节与末端互斥：本组不含关节分量，仅携带夹爪逐维分量
+                "names": ["left_gripper", "right_gripper"],
+                "position": self._hold_chunk(hold_gripper, self._steps),
                 "velocity": [],
                 "torque": [],
             },
-            # names 无位姿名 → joint_states 位姿不存在，走 ee 通道（优先级兜底演示）
+            # joint_states 无位姿分量 → 走 ee 通道（通道兜底演示）
             "end_effector_poses": {
                 "left": {"pose": [self._offset_pose(left, offset)]},
                 "right": {"pose": [self._offset_pose(right, offset)]},
