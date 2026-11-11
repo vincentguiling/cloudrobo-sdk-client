@@ -104,49 +104,6 @@ class FakeCosineCamera:
         self.closed = True
 
 
-class FakeRobotController:
-    """记录 set_end_effector_pose_control / set_motion_stop 调用；返回固定运控状态。"""
-
-    instances: List["FakeRobotController"] = []
-
-    def __init__(self):
-        type(self).instances.append(self)
-        self.pose_calls: List[tuple] = []
-        self.stop_calls = 0
-        self.motion_status: Any = _fake_motion_status()
-
-    def get_motion_status(self):
-        return self.motion_status
-
-    def set_end_effector_pose_control(
-        self, lifetime, control_group, left_pose=None, right_pose=None
-    ):
-        self.pose_calls.append((float(lifetime), list(control_group), left_pose, right_pose))
-
-    def set_motion_stop(self):
-        self.stop_calls += 1
-
-
-def _fake_motion_status():
-    """《指南》8.2.3 get_motion_status 返回结构示例（含左右末端 frames 位姿）。"""
-    return {
-        "timestamp": 1,
-        "mode": {"value": 1, "name": "SERVO"},
-        "error": {"code": 0, "message": "", "has_error": False},
-        "frames": {
-            "arm_left_link7": {
-                "position": {"x": 0.13, "y": 0.89, "z": 0.85},
-                "orientation": {"quaternion": {"x": -0.7071, "y": 0.0, "z": 0.0, "w": 0.7071}},
-            },
-            "arm_right_link7": {
-                "position": {"x": 0.13, "y": -0.89, "z": 0.85},
-                "orientation": {"quaternion": {"x": 0.0, "y": -0.7071, "z": 0.7071, "w": 0.0}},
-            },
-        },
-        "collisions": [],
-    }
-
-
 def _install_fake_a2d_sdk() -> None:
     """真实 a2d_sdk 未安装时注入假模块（被测模块导入前调用）。"""
     try:
@@ -159,7 +116,6 @@ def _install_fake_a2d_sdk() -> None:
     robot_mod = types.ModuleType("a2d_sdk.robot")
     robot_mod.RobotDds = FakeRobotDds
     robot_mod.CosineCamera = FakeCosineCamera
-    robot_mod.RobotController = FakeRobotController
     a2d.robot = robot_mod
     sys.modules.setdefault("a2d_sdk", a2d)
     sys.modules.setdefault("a2d_sdk.robot", robot_mod)
@@ -186,16 +142,9 @@ CONFIG_PATH = (
 def _reset_fakes():
     FakeRobotDds.instances.clear()
     FakeCosineCamera.instances.clear()
-    FakeRobotController.instances.clear()
     yield
     FakeRobotDds.instances.clear()
     FakeCosineCamera.instances.clear()
-    FakeRobotController.instances.clear()
-
-
-def _last_controller() -> FakeRobotController:
-    assert FakeRobotController.instances, "FakeRobotController was never constructed"
-    return FakeRobotController.instances[-1]
 
 
 def _connect(config: Dict[str, Any] = None) -> AgiBotG01HardwareAdapter:
@@ -455,12 +404,6 @@ def test_robot_config_yaml_translates_observation_and_action():
     head_ext = observation.extensions["head_joint"]
     assert list(np.frombuffer(head_ext.data, dtype="<f4")) == pytest.approx([0.1, -0.2])
     assert observation.extensions["hand_joint"].shape == [12]
-    # 末端位姿观测 → end_effector_poses（顺序与 names 对应：left, right）
-    assert list(observation.end_effector_poses.names) == ["left", "right"]
-    assert len(observation.end_effector_poses.pose) == 2
-    assert observation.end_effector_poses.pose[0] == pytest.approx(
-        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
-    )
 
     # r2c_to_device：云端动作 → 适配器平铺字段
     from cloudrobo_r2c.common.models import ExtensionValue
@@ -481,10 +424,7 @@ def test_robot_config_yaml_translates_observation_and_action():
             "velocity": [],
             "torque": [],
         },
-        "end_effector_poses": {
-            "left": {"pose": [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]},
-            "right": {"pose": [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]},
-        },
+        "end_effector_poses": {},
         "localization": {"odom_pose": [], "map_pose": []},
         "extensions": {
             "head_joint": ExtensionValue(
@@ -502,10 +442,6 @@ def test_robot_config_yaml_translates_observation_and_action():
     assert AgiBotG01HardwareAdapter.as_float_list(
         device_command["head_cmd_joint_pos"]
     ) == pytest.approx([0.3, -0.1])
-    # 末端位姿命令（per-step payload 的 pose 为 7 元素列表）
-    assert AgiBotG01HardwareAdapter.as_float_list(device_command["left_pose_cmd"]) == pytest.approx(
-        [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
-    )
     # 云端未下发 waist/wheel 时自动跳过
     assert "waist_cmd_joint_pos" not in device_command
     assert "wheel_cmd_speed" not in device_command
@@ -515,85 +451,6 @@ def test_robot_config_yaml_translates_observation_and_action():
     calls = {c[0]: c for c in _last_robot().calls}
     assert calls["move_arm"][1] == [0.1] * ARM_DOF
     assert calls["move_head"][1] == pytest.approx([0.3, -0.1])
-    # 位姿命令落到 RobotController.set_end_effector_pose_control
-    controller = _last_controller()
-    lifetime, control_group, left_pose, right_pose = controller.pose_calls[0]
-    assert lifetime == 1.0
-    assert control_group == ["left_arm", "right_arm"]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-    assert right_pose is not None
-
-
-# ---------------------------------------------------------------------------
-# 末端位姿 / 急停（RobotController，《指南》8 章）
-# ---------------------------------------------------------------------------
-
-
-def test_observation_exposes_ee_poses():
-    adapter = _connect()
-    obs = adapter.get_observation()
-    assert obs["left_ee_pose"] == pytest.approx([0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071])
-    assert obs["right_ee_pose"] == pytest.approx([0.13, -0.89, 0.85, 0.0, -0.7071, 0.7071, 0.0])
-
-
-def test_observation_ee_poses_absent_without_motion_status():
-    adapter = _connect()
-    _last_controller().motion_status = None
-    obs = adapter.get_observation()
-    assert "left_ee_pose" not in obs
-    assert "right_ee_pose" not in obs
-
-
-def test_send_pose_command_calls_ee_pose_control():
-    adapter = _connect()
-    left = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
-    right = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
-    adapter.send_action({"left_pose_cmd": left, "right_pose_cmd": right})
-    lifetime, control_group, left_pose, right_pose = _last_controller().pose_calls[0]
-    assert lifetime == 1.0
-    assert control_group == ["left_arm", "right_arm"]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-    assert right_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-
-
-def test_send_pose_command_accepts_pose7d_object():
-    # R2C Actions 的 per-step pose 是 Pose7D（含 .data 数值列表）
-    adapter = _connect()
-    pose7d = types.SimpleNamespace(data=[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0])
-    adapter.send_action({"left_pose_cmd": pose7d})
-    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-    assert right_pose is None
-
-
-def test_send_pose_command_rejects_wrong_dims():
-    adapter = _connect()
-    adapter.send_action({"left_pose_cmd": [0.1, 0.2, 0.3]})
-    assert _last_controller().pose_calls == []
-
-
-def test_motion_stop_command():
-    adapter = _connect()
-    adapter.send_action({"motion_stop_cmd": True})
-    assert _last_controller().stop_calls == 1
-
-
-def test_pose_control_disabled_falls_back_to_joints_only():
-    adapter = _connect({"enable_pose_control": False})
-    assert FakeRobotController.instances == []
-    obs = adapter.get_observation()
-    assert "left_ee_pose" not in obs
-    # 位姿命令在禁用运控器时报错（明确不可用）
-    with pytest.raises(RuntimeError, match="RobotController"):
-        adapter.send_action({"left_pose_cmd": [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]})
 
 
 # ---------------------------------------------------------------------------
@@ -604,9 +461,9 @@ def test_pose_control_disabled_falls_back_to_joints_only():
 def _load_example_module():
     pytest.importorskip("zenoh")
     examples_dir = Path(agibot_g01_client.__file__).resolve().parents[4] / "examples"
-    monkeypatch_free_path = str(examples_dir)
-    if monkeypatch_free_path not in sys.path:
-        sys.path.insert(0, monkeypatch_free_path)
+    examples_dir_str = str(examples_dir)
+    if examples_dir_str not in sys.path:
+        sys.path.insert(0, examples_dir_str)
     import agibot_g01_cloud_adapter as demo
 
     return demo
@@ -616,21 +473,17 @@ def _demo_observation():
     return types.SimpleNamespace(
         joint_states=types.SimpleNamespace(position=[0.1] * ARM_DOF),
         end_effector_states=types.SimpleNamespace(position=[0.3, 0.3]),
-        end_effector_poses=types.SimpleNamespace(
-            names=["left", "right"],
-            pose=[[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]] * 2,
-        ),
     )
 
 
 def test_example_cycler_cycles_three_groups():
     demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(steps=5, pose_offset_z=0.05)
+    cycler = demo.ThreeGroupActionCycler(steps=5)
     current = demo._extract_current(_demo_observation())
     now = 1000
 
     def next_action():
-        return cycler.build_action(now, current["joints"], current["gripper"], current["poses"])
+        return cycler.build_action(now, current["joints"], current["gripper"])
 
     # 组 0：关节 A（当前 → 目标插值 5 步，最后一步到达目标；夹爪任意角度插值）
     a1 = next_action()
@@ -639,36 +492,24 @@ def test_example_cycler_cycles_three_groups():
     assert a1.end_effector_states.position[-1] == pytest.approx([0.15, 0.15])
     # 组 1：关节 B
     a2 = next_action()
-    assert a2.joint_states.position[-1] == pytest.approx(demo.JOINT_GROUP_B["joints"])
+    assert a2.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     assert a2.end_effector_states.position[-1] == pytest.approx([0.85, 0.35])
-    # 组 2：末端位姿（当前位姿 + z 偏移；左右夹爪任意角度）
+    # 组 2：全身姿态（头/腰目标经 extensions FLOAT32 下发；夹爪任意角度）
     a3 = next_action()
-    assert a3.chunk_size == 1
-    left_pose = list(a3.end_effector_poses["left"].pose[0])
-    right_pose = list(a3.end_effector_poses["right"].pose[0])
-    assert left_pose == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
-    assert right_pose == pytest.approx(left_pose)
-    assert a3.end_effector_states.position[0] == pytest.approx([0.5, 0.8])
+    assert a3.chunk_size == 5
+    assert a3.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])
+    head_ext = a3.extensions["head_joint"]
+    assert list(np.frombuffer(bytes(head_ext.data), dtype="<f4")) == pytest.approx(
+        demo.GROUP_C["head"]
+    )
+    waist_ext = a3.extensions["waist_joint"]
+    assert list(np.frombuffer(bytes(waist_ext.data), dtype="<f4")) == pytest.approx(
+        demo.GROUP_C["waist"]
+    )
     # 往复：2 → 1 → 0
     a4 = next_action()
-    assert a4.joint_states.position[-1] == pytest.approx(demo.JOINT_GROUP_B["joints"])
+    assert a4.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     a5 = next_action()
     assert a5.joint_states.position[-1] == pytest.approx([0.0] * ARM_DOF)
-
-
-def test_example_cycler_skips_pose_group_without_ee_poses():
-    demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(steps=3, pose_offset_z=0.05)
-    observation = _demo_observation()
-    observation.end_effector_poses.pose = []
-    current = demo._extract_current(observation)
-
-    cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
-    cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
-    # 第 3 组为位姿组：缺当前末端位姿 → 返回 None（跳过本轮）
-    assert (
-        cycler.build_action(1000, current["joints"], current["gripper"], current["poses"]) is None
-    )
-    # 第 4 组回到关节 B，正常出动作
-    action = cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
-    assert action is not None and action.chunk_size == 3
+    # 关节组不带 head/waist extensions
+    assert "head_joint" not in a5.extensions

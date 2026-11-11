@@ -44,10 +44,6 @@ hardware:
       hand_right: "cam_right_wrist"
     # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
     # camera_poll_interval_s: 0.03
-    # 末端位姿控制（《指南》8 章 RobotController；创建失败自动降级为仅关节控制）
-    # enable_pose_control: true
-    # pose_lifetime_s: 1.0            # 位姿指令有效时间（秒）
-    # pose_control_group: ["left_arm", "right_arm"]
     # 适配器级干运行：只打印动作不执行（与 runtime.dry_run 任一开启即生效）
     # dry_run: false
     commands:
@@ -102,13 +98,11 @@ device_to_r2c:
     - target_key: "end_effector_states.force"
       default: []
 
-    # --- 末端位姿（RobotController.get_motion_status，未就绪时字段缺省、自动跳过） ---
+    # --- 末端位姿（第 7 章无末端位姿接口，置空） ---
     - target_key: "end_effector_poses.names"
-      default: ["left", "right"]
-
+      default: []
     - target_key: "end_effector_poses.pose"
-      source_path: "ee_poses"
-      required: false
+      default: []
 
     # --- 相机（色彩通道；深度通道可仿照增加 images.depth.* 映射） ---
     - target_key: "images.color.cam_high"
@@ -187,22 +181,5 @@ r2c_to_device:
 
     - target: "wheel_cmd_speed"
       source: "extensions.wheel_cmd"
-      use_assign_dotted: false
-      required: false
-
-    # --- 末端绝对位姿（《指南》8.1 set_end_effector_pose_control，7 维 [x,y,z,qx,qy,qz,qw]；可选） ---
-    - target: "left_pose_cmd"
-      source: "end_effector_poses.left.pose"
-      use_assign_dotted: false
-      required: false
-
-    - target: "right_pose_cmd"
-      source: "end_effector_poses.right.pose"
-      use_assign_dotted: false
-      required: false
-
-    # --- 全身急停（《指南》8.1 set_motion_stop；云端经 extensions 下发真值触发） ---
-    - target: "motion_stop_cmd"
-      source: "extensions.motion_stop"
       use_assign_dotted: false
       required: false
