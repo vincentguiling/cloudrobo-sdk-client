@@ -106,7 +106,10 @@ class FakeCosineCamera:
 
 
 class FakeRobotController:
-    """记录第 8 章 set_end_effector_pose_control / set_joint_position_control 调用。"""
+    """记录第 8 章 set_end_effector_pose_control / set_joint_position_control 调用。
+
+    ``get_motion_status`` 返回固定 frames（含左右末端位姿），用于观测侧测试。
+    """
 
     instances: List["FakeRobotController"] = []
 
@@ -114,6 +117,10 @@ class FakeRobotController:
         type(self).instances.append(self)
         self.pose_calls: List[tuple] = []
         self.joint_calls: List[tuple] = []
+        self.motion_status: Any = _fake_motion_status()
+
+    def get_motion_status(self):
+        return self.motion_status
 
     def set_end_effector_pose_control(
         self, lifetime, control_group, left_pose=None, right_pose=None
@@ -122,6 +129,26 @@ class FakeRobotController:
 
     def set_joint_position_control(self, lifetime, joint_group):
         self.joint_calls.append((float(lifetime), dict(joint_group)))
+
+
+def _fake_motion_status():
+    """《指南》8.2.3 get_motion_status 返回结构示例（含左右末端 frames 位姿）。"""
+    return {
+        "timestamp": 1,
+        "mode": {"value": 1, "name": "SERVO"},
+        "error": {"code": 0, "message": "", "has_error": False},
+        "frames": {
+            "arm_left_link7": {
+                "position": {"x": 0.13, "y": 0.89, "z": 0.85},
+                "orientation": {"quaternion": {"x": -0.7071, "y": 0.0, "z": 0.0, "w": 0.7071}},
+            },
+            "arm_right_link7": {
+                "position": {"x": 0.13, "y": -0.89, "z": 0.85},
+                "orientation": {"quaternion": {"x": 0.0, "y": -0.7071, "z": 0.7071, "w": 0.0}},
+            },
+        },
+        "collisions": [],
+    }
 
 
 def _install_fake_a2d_sdk() -> None:
@@ -306,6 +333,38 @@ def test_get_observation_maps_custom_camera_keys():
 
 
 # ---------------------------------------------------------------------------
+# 末端位姿观测（device_to_r2c，第 8 章 get_motion_status）
+# ---------------------------------------------------------------------------
+
+
+def test_observation_exposes_ee_poses():
+    adapter = _connect()
+    obs = adapter.get_observation()
+    assert obs["left_ee_pose"] == pytest.approx([0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071])
+    assert obs["right_ee_pose"] == pytest.approx([0.13, -0.89, 0.85, 0.0, -0.7071, 0.7071, 0.0])
+    # 合并字段 ee_poses：按 left、right 顺序
+    assert obs["ee_poses"][0] == pytest.approx(obs["left_ee_pose"])
+    assert obs["ee_poses"][1] == pytest.approx(obs["right_ee_pose"])
+
+
+def test_observation_ee_poses_absent_without_motion_status():
+    adapter = _connect()
+    _last_controller().motion_status = None
+    obs = adapter.get_observation()
+    assert "left_ee_pose" not in obs
+    assert "right_ee_pose" not in obs
+    assert "ee_poses" not in obs
+
+
+def test_observation_ee_poses_absent_when_motion_controller_disabled():
+    adapter = _connect({"enable_motion_controller": False})
+    obs = adapter.get_observation()
+    assert "ee_poses" not in obs
+    # 第 7 章关节观测不受影响
+    assert len(obs["joint_positions"]) == ARM_DOF
+
+
+# ---------------------------------------------------------------------------
 # 动作
 # ---------------------------------------------------------------------------
 
@@ -432,6 +491,12 @@ def test_robot_config_yaml_translates_observation_and_action():
     head_ext = observation.extensions["head_joint"]
     assert list(np.frombuffer(head_ext.data, dtype="<f4")) == pytest.approx([0.1, -0.2])
     assert observation.extensions["hand_joint"].shape == [12]
+    # 末端位姿观测 → end_effector_poses（顺序与 names 对应：left, right）
+    assert list(observation.end_effector_poses.names) == ["left", "right"]
+    assert len(observation.end_effector_poses.pose) == 2
+    assert observation.end_effector_poses.pose[0] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
+    )
 
     # r2c_to_device：云端动作 → 适配器平铺字段
     from cloudrobo_r2c.common.models import ExtensionValue

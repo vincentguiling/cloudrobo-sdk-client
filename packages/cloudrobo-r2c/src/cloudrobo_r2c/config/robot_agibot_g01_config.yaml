@@ -114,11 +114,13 @@ device_to_r2c:
     - target_key: "end_effector_states.force"
       default: []
 
-    # --- 末端位姿（第 7 章无末端位姿接口，置空） ---
+    # --- 末端位姿（第 8 章 get_motion_status frames，未就绪时字段缺省、自动跳过） ---
     - target_key: "end_effector_poses.names"
-      default: []
+      default: ["left", "right"]
+
     - target_key: "end_effector_poses.pose"
-      default: []
+      source_path: "ee_poses"
+      required: false
 
     # --- 相机（色彩通道；深度通道可仿照增加 images.depth.* 映射） ---
     - target_key: "images.color.cam_high"
