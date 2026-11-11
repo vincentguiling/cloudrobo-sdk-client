@@ -282,7 +282,7 @@ class AgiBotG01Client:
                 if camera is None:
                     break
                 for name in self._camera_group:
-                    image = camera.get_latest_image(name)
+                    image, camera_ts = camera.get_latest_image(name)
                     if image is None:
                         continue
                     arr = np.asarray(image)

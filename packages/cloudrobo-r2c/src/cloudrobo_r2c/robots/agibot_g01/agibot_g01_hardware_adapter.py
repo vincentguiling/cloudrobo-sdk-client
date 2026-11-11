@@ -370,7 +370,6 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 },
             )
             return
-
         executed: List[str] = []
         handlers = (
             ("arm_cmd_joint_pos", client.move_arm),

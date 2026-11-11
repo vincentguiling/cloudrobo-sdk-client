@@ -41,8 +41,8 @@ from cloudrobo_r2c.common.models import Actions
 logger = logging.getLogger(__name__)
 
 ADAPTER_NAME = "AgiBotG01CloudAdapter"
-DEFAULT_PROJECT_ID = "test-tenant"
-DEFAULT_DEVICE_ID = "agibot-g01-01"
+DEFAULT_PROJECT_ID = "r2c"
+DEFAULT_DEVICE_ID = "local"
 DEFAULT_CLIENT_ID = "agibot-g01-cloud-adapter"
 
 # 与 config/robot_agibot_g01_config.yaml 的 joint_states.names 保持一致
@@ -55,7 +55,7 @@ ARM_DOF = 14
 GRIPPER_DOF = 2
 HEAD_DOF = 2
 WAIST_DOF = 2
-INTERP_STEPS = 15  # 关节插值步数（每步在 publish_hz 节拍下执行）
+INTERP_STEPS = 60  # 关节插值步数（每步在 publish_hz 节拍下执行2s）
 
 
 def _pack_ext(values: Sequence[float]) -> Dict[str, Any]:
@@ -76,7 +76,7 @@ def _pack_ext(values: Sequence[float]) -> Dict[str, Any]:
 GROUP_A = {
     "name": "joint_a(收拢)",
     "kind": "joints",
-    "joints": [0.0] * ARM_DOF,
+    "joints": [-1.125699520111084, 0.5228543281555176, 0.10490940511226654, -1.283866286277771, 0.7302126884460449, 1.476741075515747, -0.16992810368537903, 1.1257692575454712, -0.522889256477356, -0.10499665141105652, 1.2836743593215942, -0.7302126884460449, -1.495011329650879, 0.16991065442562103],
     "gripper": [0.15, 0.15],  # 任意角度示例：连续小数值
 }
 
@@ -84,52 +84,17 @@ GROUP_A = {
 GROUP_B = {
     "name": "joint_b(展开)",
     "kind": "joints",
-    "joints": [
-        # left arm 1..7（示例值，现场按限位调整）
-        0.0,
-        0.35,
-        -0.55,
-        0.9,
-        0.0,
-        0.3,
-        0.0,
-        # right arm 1..7
-        0.0,
-        -0.35,
-        -0.55,
-        0.9,
-        0.0,
-        -0.3,
-        0.0,
-    ],
+    "joints": [-1.187420129776001, 0.5014432072639465, 0.7781304121017456, -1.119522213935852, 0.6628905534744263, 1.0817254781723022, -0.25557270646095276, 1.1248793601989746, -0.9522988796234131, -0.04086789861321449, 0.5556254386901855, -1.3621994256973267, -1.5153056383132935, 0.16874149441719055],
     "gripper": [0.85, 0.35],  # 左右夹爪各自任意角度
 }
-
 # 组 2：全身位姿组 —— 手臂 + 头部 + 腰部一起到达新姿态（第 7 章"整体姿态"语义）
 GROUP_C = {
     "name": "pose(全身姿态)",
-    "kind": "pose",
-    "joints": [
-        # left arm 1..7
-        -0.2,
-        0.25,
-        -0.4,
-        0.7,
-        0.1,
-        0.2,
-        0.0,
-        # right arm 1..7
-        -0.2,
-        -0.25,
-        -0.4,
-        0.7,
-        0.1,
-        -0.2,
-        0.0,
-    ],
+    "kind": "joints",
+    "joints": [-1.1872631311416626, 0.7889842987060547, 1.6079477071762085, -1.1197315454483032, 0.6622798442840576, 0.26489099860191345, -0.2558518946170807, 1.1237276792526245, -0.9279735684394836, -0.01715334877371788, 0.14202554523944855, -1.5966051816940308, -1.3580461740493774, 0.20629389584064484],
     # 头部 [yaw(rad), pitch(rad)]，腰部 [pitch(rad), height(cm)]（《指南》7.2.1）
-    "head": [0.3, 0.1],
-    "waist": [0.1, 35.0],
+    "head": [0.1, 0.1],
+    "waist": [0.1, 10.0],
     "gripper": [0.5, 0.8],
 }
 
@@ -271,8 +236,8 @@ def main() -> None:
         project_id=args.project_id,
         device_id=args.device_id,
         client_id=args.client_id,
-        endpoint_role="listen",
-        endpoints=["tcp/0.0.0.0:7447"],
+        endpoint_role="connect",
+        endpoints=["tcp/127.0.0.1:7447"],
         mode="peer",
     )
     logger.info(
