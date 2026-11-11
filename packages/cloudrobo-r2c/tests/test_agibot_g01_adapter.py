@@ -736,7 +736,82 @@ def _demo_observation():
     return types.SimpleNamespace(
         joint_states=types.SimpleNamespace(position=[0.1] * ARM_DOF),
         end_effector_states=types.SimpleNamespace(position=[0.3, 0.3]),
+        end_effector_poses=types.SimpleNamespace(
+            names=["left", "right"],
+            pose=[[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]] * 2,
+        ),
     )
+
+
+def test_example_ch8_demo_groups():
+    """--include-ch8：第 8 章三种示例组（names 位姿 / ee 通道 / 组名关节）。"""
+    demo = _load_example_module()
+    cycler = demo.ThreeGroupActionCycler(
+        steps=5,
+        sequence=demo.CH8_CYCLE_SEQUENCE,
+        include_ch8=True,
+        pose_offset_z=0.05,
+    )
+    current = demo._extract_current(_demo_observation())
+    now = 1000
+
+    def next_action():
+        return cycler.build_action(now, current["joints"], current["gripper"], current["poses"])
+
+    # 前 4 步为第 7 章：0 → 1 → 2 → 1
+    for _ in range(3):
+        next_action()
+    a4 = next_action()
+    assert a4.joint_states.names == [f"left_arm_joint_{i}" for i in range(1, 8)] + [
+        f"right_arm_joint_{i}" for i in range(1, 8)
+    ]
+    # 组 3：末端位姿经 joint_states names（当前位姿 + z 偏移）
+    a5 = next_action()
+    assert a5.joint_states.names == ["left_pose", "right_pose"]
+    row = a5.joint_states.position[0]
+    assert row[:7] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
+    assert row[7:] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
+    # 组 4：ee 通道（joint_states 保持当前关节）
+    a6 = next_action()
+    assert list(a6.end_effector_poses["left"].pose[0]) == pytest.approx(
+        [0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0]
+    )
+    assert a6.joint_states.position[0] == pytest.approx([0.1] * ARM_DOF)
+    # 组 5：组名关节（复用 GROUP_C 真机值）
+    a7 = next_action()
+    assert a7.joint_states.names == ["left_arm", "right_arm"]
+    assert a7.joint_states.position[0][:7] == pytest.approx(demo.GROUP_C["joints"][:7])
+    # 往复：5 → 4 → 3 → 2 ...
+    a8 = next_action()
+    assert list(a8.end_effector_poses["left"].pose[0]) == pytest.approx(
+        [0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0]
+    )
+    a9 = next_action()
+    assert a9.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+
+
+def test_example_ch8_pose_group_skips_without_ee_poses():
+    demo = _load_example_module()
+    cycler = demo.ThreeGroupActionCycler(
+        steps=3,
+        sequence=demo.CH8_CYCLE_SEQUENCE,
+        include_ch8=True,
+        pose_offset_z=0.05,
+    )
+    observation = _demo_observation()
+    observation.end_effector_poses.pose = []
+    current = demo._extract_current(observation)
+
+    def next_action():
+        return cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
+
+    # 走到组 3（joint_states 位姿）时缺观测位姿 → 返回 None 跳过该轮
+    for _ in range(4):
+        assert next_action() is not None
+    assert next_action() is None
+    # 后续组 4（ee 通道）同样缺位姿 → None；组 5 正常
+    assert next_action() is None
+    assert next_action() is not None
 
 
 def test_example_cycler_cycles_three_groups():
