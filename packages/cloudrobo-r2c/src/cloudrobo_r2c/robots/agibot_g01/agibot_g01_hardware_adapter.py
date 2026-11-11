@@ -32,6 +32,9 @@
 - ``hand_joint_positions``  — 灵巧手 12 关节
 - ``head_joint_positions``  — 头部 ``[yaw, pitch]``
 - ``waist_joint_positions`` — 腰部 ``[pitch, height_cm]``
+- ``left_ee_pose`` / ``right_ee_pose`` / ``ee_poses`` — 左/右末端位姿
+  ``[x, y, z, qx, qy, qz, qw]``（来自第 8 章 ``get_motion_status().frames``，
+  映射到 ``end_effector_poses``；未就绪或运控器不可用时不产出）
 - ``body_pose``             — 整体姿态关节状态（原样透传，float32 数组）
 - 相机图像按 ``camera_key_map`` 映射后以 R2C 键暴露（默认
   ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist``）
@@ -198,6 +201,10 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         - ``commands``                如 ``go_home`` 复位指令
     """
 
+    # RobotController.get_motion_status() frames 中左右末端的 link 键（《指南》8.2.3）
+    _LEFT_EE_FRAME = "arm_left_link7"
+    _RIGHT_EE_FRAME = "arm_right_link7"
+
     def __init__(self, config: Optional[Mapping[str, Any]] = None) -> None:
         self._config: Dict[str, Any] = dict(config or {})
         self._dry_run = bool(self._config.get("dry_run", False))
@@ -325,6 +332,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             dtype=np.float32,
         )
         self._fill_body_pose(observation, client.body_pose_joint_states)
+        self._fill_ee_poses(observation, client)
 
         # 相机图像：以 R2C 键（camera_key_map 映射）暴露
         for g01_name, image in client.get_camera_images().items():
@@ -369,6 +377,53 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         arr = np.asarray(raw, dtype=np.float64).reshape(-1)
         # float32 与 extensions 映射的 dtype 声明一致（tobytes 打包）
         observation["body_pose"] = arr.astype(np.float32)
+
+    def _fill_ee_poses(self, observation: Dict[str, Any], client: AgiBotG01Client) -> None:
+        """末端位姿观测（《指南》8.2.3 ``get_motion_status().frames``）。
+
+        产出 ``left_ee_pose`` / ``right_ee_pose``（``[x, y, z, qx, qy, qz, qw]`` list）
+        与合并字段 ``ee_poses``（按 left、right 顺序的位姿列表，映射到 device_to_r2c 的
+        ``end_effector_poses.pose``）；运控状态未就绪或运控器不可用时不产出字段。
+        """
+        try:
+            status = client.get_motion_status()
+        except Exception as exc:
+            # RobotController 不可用（禁用/失败降级）属正常路径，debug 级即可
+            logger.debug("[AgiBotG01] get_motion_status unavailable: %s", exc)
+            return
+        if not isinstance(status, Mapping):
+            return
+        frames = status.get("frames") or {}
+        left = self._frame_to_pose7d(frames.get(self._LEFT_EE_FRAME))
+        right = self._frame_to_pose7d(frames.get(self._RIGHT_EE_FRAME))
+        if left is not None:
+            observation["left_ee_pose"] = left
+        if right is not None:
+            observation["right_ee_pose"] = right
+        ee_poses = [pose for pose in (left, right) if pose is not None]
+        if ee_poses:
+            observation["ee_poses"] = ee_poses
+
+    @staticmethod
+    def _frame_to_pose7d(frame: Any) -> Optional[List[float]]:
+        """把 ``frames.<link>`` 的 position+quaternion 展平为 7 维位姿 list。"""
+        if not isinstance(frame, Mapping):
+            return None
+        position = frame.get("position") or {}
+        quaternion = (frame.get("orientation") or {}).get("quaternion") or {}
+        try:
+            pose = [
+                float(position["x"]),
+                float(position["y"]),
+                float(position["z"]),
+                float(quaternion["x"]),
+                float(quaternion["y"]),
+                float(quaternion["z"]),
+                float(quaternion["w"]),
+            ]
+        except (KeyError, TypeError, ValueError):
+            return None
+        return pose
 
     def _safe_state(self, getter: Any) -> Optional[np.ndarray]:
         """调用 ``(数据, 时间戳)`` 型状态查询，异常/空值返回 ``None``。"""

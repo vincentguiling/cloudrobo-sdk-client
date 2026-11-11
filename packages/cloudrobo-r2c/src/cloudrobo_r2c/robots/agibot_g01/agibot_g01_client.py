@@ -278,6 +278,15 @@ class AgiBotG01Client:
             )
         return self._motion_controller
 
+    def get_motion_status(self) -> Any:
+        """《指南》8.2.3：返回运控状态 dict（``frames`` 含左右末端位姿），无状态返回 None。
+
+        适配器用它产出 ``left_ee_pose`` / ``right_ee_pose`` / ``ee_poses`` 观测
+        （映射到 device_to_r2c 的 ``end_effector_poses``）。
+        """
+        with self._lock:
+            return self._require_motion_controller().get_motion_status()
+
     def set_end_effector_pose(
         self,
         lifetime: float,
