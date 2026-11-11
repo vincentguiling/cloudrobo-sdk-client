@@ -98,7 +98,8 @@ class FakeCosineCamera:
         type(self).instances.append(self)
 
     def get_latest_image(self, camera_name):
-        return self.frames.get(camera_name)
+        # 真实 a2d_sdk 返回 (图像, 时间戳)（见《指南》9.5 使用示例）
+        return self.frames.get(camera_name), 1_000_000_000
 
     def close(self):
         self.closed = True
@@ -488,28 +489,21 @@ def test_example_cycler_cycles_three_groups():
     # 组 0：关节 A（当前 → 目标插值 5 步，最后一步到达目标；夹爪任意角度插值）
     a1 = next_action()
     assert a1.chunk_size == 5
-    assert a1.joint_states.position[-1] == pytest.approx([0.0] * ARM_DOF)
+    assert a1.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
     assert a1.end_effector_states.position[-1] == pytest.approx([0.15, 0.15])
     # 组 1：关节 B
     a2 = next_action()
     assert a2.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     assert a2.end_effector_states.position[-1] == pytest.approx([0.85, 0.35])
-    # 组 2：全身姿态（头/腰目标经 extensions FLOAT32 下发；夹爪任意角度）
+    # 组 2：真机调试后为纯关节组（目标为真机采集值，不带 head/waist extensions）
     a3 = next_action()
     assert a3.chunk_size == 5
+    assert a3.joint_states.position[-1] == pytest.approx(demo.GROUP_C["joints"])
     assert a3.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])
-    head_ext = a3.extensions["head_joint"]
-    assert list(np.frombuffer(bytes(head_ext.data), dtype="<f4")) == pytest.approx(
-        demo.GROUP_C["head"]
-    )
-    waist_ext = a3.extensions["waist_joint"]
-    assert list(np.frombuffer(bytes(waist_ext.data), dtype="<f4")) == pytest.approx(
-        demo.GROUP_C["waist"]
-    )
+    assert "head_joint" not in a3.extensions
+    assert "waist_joint" not in a3.extensions
     # 往复：2 → 1 → 0
     a4 = next_action()
     assert a4.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     a5 = next_action()
-    assert a5.joint_states.position[-1] == pytest.approx([0.0] * ARM_DOF)
-    # 关节组不带 head/waist extensions
-    assert "head_joint" not in a5.extensions
+    assert a5.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
