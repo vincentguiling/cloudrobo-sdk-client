@@ -105,6 +105,25 @@ class FakeCosineCamera:
         self.closed = True
 
 
+class FakeRobotController:
+    """记录第 8 章 set_end_effector_pose_control / set_joint_position_control 调用。"""
+
+    instances: List["FakeRobotController"] = []
+
+    def __init__(self):
+        type(self).instances.append(self)
+        self.pose_calls: List[tuple] = []
+        self.joint_calls: List[tuple] = []
+
+    def set_end_effector_pose_control(
+        self, lifetime, control_group, left_pose=None, right_pose=None
+    ):
+        self.pose_calls.append((float(lifetime), list(control_group), left_pose, right_pose))
+
+    def set_joint_position_control(self, lifetime, joint_group):
+        self.joint_calls.append((float(lifetime), dict(joint_group)))
+
+
 def _install_fake_a2d_sdk() -> None:
     """真实 a2d_sdk 未安装时注入假模块（被测模块导入前调用）。"""
     try:
@@ -117,6 +136,7 @@ def _install_fake_a2d_sdk() -> None:
     robot_mod = types.ModuleType("a2d_sdk.robot")
     robot_mod.RobotDds = FakeRobotDds
     robot_mod.CosineCamera = FakeCosineCamera
+    robot_mod.RobotController = FakeRobotController
     a2d.robot = robot_mod
     sys.modules.setdefault("a2d_sdk", a2d)
     sys.modules.setdefault("a2d_sdk.robot", robot_mod)
@@ -143,9 +163,16 @@ CONFIG_PATH = (
 def _reset_fakes():
     FakeRobotDds.instances.clear()
     FakeCosineCamera.instances.clear()
+    FakeRobotController.instances.clear()
     yield
     FakeRobotDds.instances.clear()
     FakeCosineCamera.instances.clear()
+    FakeRobotController.instances.clear()
+
+
+def _last_controller() -> FakeRobotController:
+    assert FakeRobotController.instances, "FakeRobotController was never constructed"
+    return FakeRobotController.instances[-1]
 
 
 def _connect(config: Dict[str, Any] = None) -> AgiBotG01HardwareAdapter:
@@ -452,6 +479,176 @@ def test_robot_config_yaml_translates_observation_and_action():
     calls = {c[0]: c for c in _last_robot().calls}
     assert calls["move_arm"][1] == [0.1] * ARM_DOF
     assert calls["move_head"][1] == pytest.approx([0.3, -0.1])
+    # joint_states.names 映射为 joint_names（第 7/8 章路由依据；此处为空 → 第 7 章）
+    assert device_command["joint_names"] == []
+
+
+# ---------------------------------------------------------------------------
+# 第 7 / 8 章路由（按 joint_states.names 区分，《指南》8.1）
+# ---------------------------------------------------------------------------
+
+
+LEFT_POSE = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
+RIGHT_POSE = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, -1.0]
+
+
+def test_route_pose_via_joint_states_names():
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_pose", "right_pose"],
+            "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE,
+        }
+    )
+    controller = _last_controller()
+    lifetime, control_group, left_pose, right_pose = controller.pose_calls[0]
+    assert lifetime == 1.0
+    assert control_group == ["left_arm", "right_arm"]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    )
+    assert right_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": -1.0}
+    )
+    # 位姿路由不走第 7 章 move_arm
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+
+
+def test_route_pose_priority_joint_states_over_ee():
+    # joint_states 位姿与 end_effector_poses.pose 同时存在：joint_states 优先
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_pose", "right_pose"],
+            "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE,
+            "left_pose_cmd_ee": [9.0, 9.0, 9.0, 0.0, 0.0, 0.0, 1.0],
+            "right_pose_cmd_ee": [9.0, 9.0, 9.0, 0.0, 0.0, 0.0, 1.0],
+        }
+    )
+    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    )
+    assert right_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": -1.0}
+    )
+
+
+def test_route_pose_fallback_to_ee_channel():
+    # joint_states 不含位姿名，末端位姿经 end_effector_poses.pose 下发
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
+            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "arm_cmd_joint_pos": [0.1] * ARM_DOF,
+            "left_pose_cmd_ee": LEFT_POSE,
+            "right_pose_cmd_ee": RIGHT_POSE,
+        }
+    )
+    # 关节走第 7 章，位姿走第 8 章
+    assert any(c[0] == "move_arm" for c in _last_robot().calls)
+    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    )
+    assert right_pose is not None
+
+
+def test_route_joints8_via_group_names():
+    # names 均为第 8 章部位组名（每组 7 关节）→ set_joint_position_control
+    adapter = _connect()
+    left_group = [0.1] * 7
+    right_group = [0.2] * 7
+    adapter.send_action(
+        {
+            "joint_names": ["left_arm", "right_arm"],
+            "arm_cmd_joint_pos": left_group + right_group,
+        }
+    )
+    controller = _last_controller()
+    lifetime, joint_group = controller.joint_calls[0]
+    assert lifetime == 1.0
+    assert joint_group["left_arm"] == pytest.approx(left_group)
+    assert joint_group["right_arm"] == pytest.approx(right_group)
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+    assert controller.pose_calls == []
+
+
+def test_route_joints7_with_arm_joint_names():
+    # names 为双臂关节名 → 第 7 章 move_arm（默认路径）
+    adapter = _connect()
+    arm = [0.1] * ARM_DOF
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
+            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "arm_cmd_joint_pos": arm,
+        }
+    )
+    assert not _last_controller().pose_calls
+    assert not _last_controller().joint_calls
+    assert any(c[0] == "move_arm" for c in _last_robot().calls)
+
+
+def test_route_pose_rejects_wrong_dims():
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_pose"],
+            "arm_cmd_joint_pos": [0.1, 0.2, 0.3],  # 不足 7 维
+        }
+    )
+    assert _last_controller().pose_calls == []
+
+
+def test_translator_maps_ee_pose_and_joint_names():
+    from cloudrobo_r2c.common.models import Pose7D
+    from cloudrobo_r2c.translators.device_translator import ConfigurableDeviceTranslator
+
+    config = _load_robot_config()
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    step = {
+        "timestamp": 1,
+        "id": 1,
+        "chunk_index": 0,
+        "joint_states": {
+            "names": ["left_pose", "right_pose"],
+            "position": LEFT_POSE + RIGHT_POSE,
+            "velocity": [],
+            "torque": [],
+        },
+        "end_effector_states": {"names": [], "position": [], "velocity": [], "torque": []},
+        "end_effector_poses": {
+            # 与 sync_client._extract_action_step 的 per-step 结构一致（pose 为 Pose7D）
+            "left": {"pose": Pose7D(list(LEFT_POSE))},
+            "right": {"pose": Pose7D(list(RIGHT_POSE))},
+        },
+        "localization": {"odom_pose": [], "map_pose": []},
+        "extensions": {},
+    }
+    device_command = translator.r2c_to_device(step)
+    assert device_command["joint_names"] == ["left_pose", "right_pose"]
+    # joint_states 位姿按 names 选取（source_name_ref 语义等价：索引 0/1 各 7 维）
+    assert AgiBotG01HardwareAdapter.as_float_list(device_command["arm_cmd_joint_pos"]) == (
+        pytest.approx(LEFT_POSE + RIGHT_POSE)
+    )
+    # ee 通道：per-step pose 为 7 元素列表，映射为 *_pose_cmd_ee
+    assert AgiBotG01HardwareAdapter.as_float_list(device_command["left_pose_cmd_ee"]) == (
+        pytest.approx(LEFT_POSE)
+    )
+    assert AgiBotG01HardwareAdapter.as_float_list(device_command["right_pose_cmd_ee"]) == (
+        pytest.approx(RIGHT_POSE)
+    )
+    # 端到端：joint_states 位姿优先于 ee 通道
+    adapter = _connect()
+    adapter.send_action(device_command)
+    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    )
+    assert right_pose is not None
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
 
 
 # ---------------------------------------------------------------------------

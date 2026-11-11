@@ -1,11 +1,22 @@
 """AgiBot G01（智元精灵 G01）硬件适配器。
 
-基于智元 GDK Python SDK（``a2d_sdk``）的 ``RobotDds`` / ``CosineCamera`` 接口实现
-:class:`~cloudrobo_r2c.core.interfaces.IRobotHardwareAdapter`，**仅使用
-《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）与第 9 章（CosineCamera）接口**
-（不使用第 8 章 RobotController）。
+基于智元 GDK Python SDK（``a2d_sdk``）实现
+:class:`~cloudrobo_r2c.core.interfaces.IRobotHardwareAdapter`，接口依据
+《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）、第 8 章（RobotController）
+与第 9 章（CosineCamera）。
 
-覆盖部位（第 7 章）：
+**第 7 章 / 第 8 章控制按 ``joint_states.names`` 区分**（云端动作的 names 决定路由）：
+
+- names 为双臂关节名（如 ``left_arm_joint_1..7`` / ``right_arm_joint_1..7``，或缺省）
+  → 第 7 章关节控制 ``move_arm``
+- names 含 ``left_pose`` / ``right_pose``（position 按 7 维位姿 ``[x,y,z,qx,qy,qz,qw]``
+  解析）→ 第 8 章末端绝对位姿 ``set_end_effector_pose_control``；末端位姿在
+  ``joint_states`` 与 ``end_effector_poses.pose`` 都可有，**同时存在时 joint_states
+  的位姿优先**
+- names 为部位组名（``left_arm`` / ``right_arm`` 等，position 按每组 7 关节解析）
+  → 第 8 章关节绝对位置控制 ``set_joint_position_control``
+
+覆盖部位：
 - 双臂 14 关节（左 7 + 右 7，弧度）
 - 夹持器 2 通道（``[0, 1]`` 归一化或 ``[35, 120]`` 原始值，任意角度连续透传）
 - 灵巧手 12 关节（弧度）
@@ -13,10 +24,6 @@
 - 轮式底盘 ``move_wheel(linear, angular)``
 - 整体姿态查询 ``body_pose_joint_states``
 - 相机通道（头部 / 左右手腕等，``np.ndarray`` HWC）
-
-"位姿"语义说明：第 7 章仅提供关节空间接口，本适配器的位姿动作 = 手臂 + 头 + 腰 +
-夹爪多部位关节目标的组合（全身姿态）；末端笛卡尔位姿控制属于第 8 章
-（``RobotController``），按要求未接入。
 
 观测平铺字段（供 ``ConfigurableDeviceTranslator`` 映射到 R2C 标准格式）：
 
@@ -31,12 +38,16 @@
 
 动作平铺字段（由 ``r2c_to_device`` 映射产生，缺省字段自动跳过）：
 
-- ``arm_cmd_joint_pos``     — 双臂 14 关节目标（弧度）→ ``move_arm``
+- ``joint_names``           — ``joint_states.names``（第 7/8 章路由依据）
+- ``arm_cmd_joint_pos``     — ``joint_states.position`` 前 14 维（关节或位姿，按路由解释）
 - ``gripper_cmd_pos``       — 夹持器 2 通道目标（任意角度）→ ``move_gripper``
 - ``hand_cmd_joint_pos``    — 灵巧手 12 关节目标 → ``move_hand``
 - ``head_cmd_joint_pos``    — 头部 ``[yaw, pitch]`` 目标 → ``move_head``
 - ``waist_cmd_joint_pos``   — 腰部 ``[pitch, height_cm]`` 目标 → ``move_waist``
 - ``wheel_cmd_speed``       — 底盘 ``[linear, angular]`` → ``move_wheel``
+- ``left_pose_cmd`` / ``right_pose_cmd``        — 来自 joint_states 的 7 维末端位姿
+- ``left_pose_cmd_ee`` / ``right_pose_cmd_ee``  — 来自 ``end_effector_poses.pose`` 的
+  7 维末端位姿（joint_states 位姿存在时优先用前者）
 
 动作字段支持 ``ExtensionValue``（FLOAT32/FLOAT64，形状一维），云端可将头/腰/轮
 等扩展指令放进 ``Actions.extensions``，由适配器负责解码。
@@ -74,6 +85,8 @@ GRIPPER_DOF = 2
 HAND_DOF = 12
 HEAD_DOF = 2
 WAIST_DOF = 2
+# 末端位姿维度 [x, y, z, qx, qy, qz, qw]（《指南》8.1）
+POSE_DOF = 7
 
 # 适配器观测/动作字段的期望维度（超长截断、不足补零前先告警）
 EXPECTED_DIMS: Dict[str, int] = {
@@ -88,7 +101,34 @@ EXPECTED_DIMS: Dict[str, int] = {
     "head_cmd_joint_pos": HEAD_DOF,
     "waist_cmd_joint_pos": WAIST_DOF,
     "wheel_cmd_speed": 2,
+    "left_pose_cmd": POSE_DOF,
+    "right_pose_cmd": POSE_DOF,
+    "left_pose_cmd_ee": POSE_DOF,
+    "right_pose_cmd_ee": POSE_DOF,
 }
+
+# 第 7/8 章路由：joint_states.names 中的末端位姿条目名（position 按 7 维解析）
+POSE_JOINT_NAMES = ("left_pose", "right_pose")
+
+# 第 7/8 章路由：joint_states.names 中的第 8 章部位组名（position 按每组 7 关节解析，
+# 对应《指南》8.1 set_joint_position_control 的 joint_group key）
+JOINT_GROUP_NAMES = frozenset(
+    {
+        "left_arm",
+        "right_arm",
+        "head",
+        "waist",
+        "gripper",
+        "hand",
+        "chassis",
+        "left_tool",
+        "right_tool",
+        "head_yaw",
+        "head_pitch",
+        "waist_pitch",
+        "waist_lift",
+    }
+)
 
 # 复位指令（go_home）各部位键的期望维度（与动作键名不同，单独维护）
 RESET_EXPECTED_DIMS: Dict[str, int] = {
@@ -139,7 +179,7 @@ class AgiBotG01ResetCommand(AdapterCommand):
 
 
 class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
-    """智元精灵 G01 硬件适配器（GDK RobotDds + CosineCamera，仅第 7/9 章接口）。
+    """智元精灵 G01 硬件适配器（GDK RobotDds + CosineCamera + RobotController）。
 
     用法（ ``config/robot_agibot_g01_config.yaml``）：
 
@@ -150,6 +190,10 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         - ``camera_group``            启用的 G01 相机通道列表
         - ``camera_key_map``          G01 通道名 → R2C 图像键
         - ``camera_poll_interval_s``  相机取流线程轮询间隔（默认 0.03s ≈ 30Hz）
+        - ``enable_motion_controller`` 是否启用 ``RobotController``（第 8 章，默认 true；
+                                      创建失败自动降级为仅第 7 章关节控制）
+        - ``control_lifetime_s``      第 8 章位姿/关节指令有效时间（默认 1.0s）
+        - ``pose_control_group``      位姿控制部位（默认 ["left_arm", "right_arm"]）
         - ``dry_run``                 适配器级干运行：只打印动作不执行
         - ``commands``                如 ``go_home`` 复位指令
     """
@@ -165,6 +209,11 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             camera_key_map if camera_key_map else DEFAULT_CAMERA_KEY_MAP
         )
         self._camera_poll_interval_s = float(self._config.get("camera_poll_interval_s", 0.03))
+        self._enable_motion_controller = bool(self._config.get("enable_motion_controller", True))
+        self._control_lifetime_s = float(self._config.get("control_lifetime_s", 1.0))
+        self._pose_control_group = list(
+            self._config.get("pose_control_group", ["left_arm", "right_arm"])
+        )
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -191,6 +240,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             camera_enabled=self._camera_enabled,
             init_wait_s=self._init_wait_s,
             camera_poll_interval_s=self._camera_poll_interval_s,
+            enable_motion_controller=self._enable_motion_controller,
         )
         try:
             client.connect()
@@ -356,6 +406,14 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     def send_action(self, command: Mapping[str, Any]) -> None:
         """执行云端动作（平铺字段，见模块 docstring；缺失字段自动跳过）。
 
+        第 7 章 / 第 8 章控制按 ``joint_names``（``joint_states.names``）路由：
+
+        - names 含 ``left_pose`` / ``right_pose`` → 第 8 章末端位姿（position 按
+          7 维位姿解析；与 ``end_effector_poses.pose`` 同时存在时 joint_states 优先）
+        - names 均为第 8 章部位组名（``left_arm`` / ``right_arm`` 等）→ 第 8 章
+          关节绝对位置控制（position 按每组 7 关节解析）
+        - 其余（双臂关节名或缺省）→ 第 7 章 ``move_arm``
+
         ``runtime.dry_run``（客户端级）或 ``hardware.config.dry_run``（适配器级）
         开启时只打印不执行。
         """
@@ -371,8 +429,33 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             )
             return
         executed: List[str] = []
+
+        joint_names = self._as_str_list(command.get("joint_names"))
+        route = self._resolve_control_route(joint_names)
+        arm_values = (
+            self.as_float_list(command["arm_cmd_joint_pos"])
+            if "arm_cmd_joint_pos" in command
+            else None
+        )
+
+        # —— 双臂主控制：按 names 路由第 7 / 8 章 ——
+        if route == "pose":
+            executed += self._apply_ch8_pose(client, joint_names, arm_values, command)
+        elif route == "joints8":
+            executed += self._apply_ch8_joints(client, joint_names, arm_values)
+        else:
+            if arm_values is not None:
+                # 第 7 章关节控制
+                if self._check_dims("arm_cmd_joint_pos", arm_values):
+                    client.move_arm(arm_values)
+                    executed.append("arm_cmd_joint_pos")
+            # ee 通道兜底：joint_states 不含位姿名但 end_effector_poses 有位姿时，
+            # 同样走第 8 章末端位姿（joint_states 位姿优先的语义不受影响）
+            if "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command:
+                executed += self._apply_ch8_pose(client, [], None, command)
+
+        # —— 第 7 章其余部位（夹爪/灵巧手/头/腰） ——
         handlers = (
-            ("arm_cmd_joint_pos", client.move_arm),
             ("gripper_cmd_pos", client.move_gripper),
             ("hand_cmd_joint_pos", client.move_hand),
             ("head_cmd_joint_pos", client.move_head),
@@ -402,6 +485,124 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             )
         else:
             logger.debug("[AgiBotG01] executed actions: %s", executed)
+
+    # ------------------------------------------------------------------
+    # 第 7 / 8 章路由（《指南》8.1）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _as_str_list(value: Any) -> List[str]:
+        """把 names 序列安全转为字符串列表（缺失/异常返回空列表）。"""
+        if value is None:
+            return []
+        try:
+            return [str(v) for v in value]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _resolve_control_route(joint_names: List[str]) -> str:
+        """按 ``joint_states.names`` 解析控制路由：``pose`` / ``joints8`` / ``joints7``。"""
+        if not joint_names:
+            return "joints7"
+        if any(name in POSE_JOINT_NAMES for name in joint_names):
+            return "pose"
+        if all(name in JOINT_GROUP_NAMES for name in joint_names):
+            return "joints8"
+        return "joints7"
+
+    def _apply_ch8_pose(
+        self,
+        client: AgiBotG01Client,
+        joint_names: List[str],
+        arm_values: Optional[List[float]],
+        command: Mapping[str, Any],
+    ) -> List[str]:
+        """第 8 章末端位姿：joint_states 位姿优先，缺省时回退 end_effector_poses。"""
+        left: Optional[List[float]] = None
+        right: Optional[List[float]] = None
+        if arm_values:
+            for index, name in enumerate(joint_names):
+                if name not in POSE_JOINT_NAMES:
+                    logger.warning(
+                        "[AgiBotG01] pose route skips non-pose name %r in joint_states.names",
+                        name,
+                    )
+                    continue
+                segment = arm_values[index * POSE_DOF : (index + 1) * POSE_DOF]
+                if len(segment) != POSE_DOF:
+                    logger.error(
+                        "[AgiBotG01] pose entry %r expects %d values, got %d; skipped",
+                        name,
+                        POSE_DOF,
+                        len(segment),
+                    )
+                    continue
+                if name == "left_pose":
+                    left = segment
+                else:
+                    right = segment
+        # joint_states 位姿存在时优先；否则回退 end_effector_poses 通道
+        if left is None and "left_pose_cmd_ee" in command:
+            left = self.as_float_list(command["left_pose_cmd_ee"])
+        if right is None and "right_pose_cmd_ee" in command:
+            right = self.as_float_list(command["right_pose_cmd_ee"])
+        if left is None and right is None:
+            return []
+
+        if left is not None and not self._check_dims("left_pose_cmd", left):
+            left = None
+        if right is not None and not self._check_dims("right_pose_cmd", right):
+            right = None
+        if left is None and right is None:
+            return []
+
+        client.set_end_effector_pose(
+            lifetime=self._control_lifetime_s,
+            control_group=self._pose_control_group,
+            left_pose=self._pose_to_dict(left) if left else None,
+            right_pose=self._pose_to_dict(right) if right else None,
+        )
+        sides = [side for side, pose in (("left", left), ("right", right)) if pose is not None]
+        return ["ch8_pose(" + "/".join(sides) + ")"]
+
+    def _apply_ch8_joints(
+        self,
+        client: AgiBotG01Client,
+        joint_names: List[str],
+        arm_values: Optional[List[float]],
+    ) -> List[str]:
+        """第 8 章关节绝对位置控制：names 为部位组名，position 按每组 7 关节解析。"""
+        if not arm_values:
+            return []
+        joint_group: Dict[str, List[float]] = {}
+        for index, name in enumerate(joint_names):
+            segment = arm_values[index * 7 : (index + 1) * 7]
+            if len(segment) != 7:
+                logger.error(
+                    "[AgiBotG01] joint group %r expects 7 values, got %d; skipped",
+                    name,
+                    len(segment),
+                )
+                continue
+            joint_group[name] = segment
+        if not joint_group:
+            return []
+        client.set_joint_position_control(self._control_lifetime_s, joint_group)
+        return [f"ch8_joints({'+'.join(sorted(joint_group))})"]
+
+    @staticmethod
+    def _pose_to_dict(pose: List[float]) -> Dict[str, float]:
+        """7 维位姿 → GDK 位姿 dict ``{x, y, z, qx, qy, qz, qw}``。"""
+        return {
+            "x": pose[0],
+            "y": pose[1],
+            "z": pose[2],
+            "qx": pose[3],
+            "qy": pose[4],
+            "qz": pose[5],
+            "qw": pose[6],
+        }
 
     # ------------------------------------------------------------------
     # 工具方法
