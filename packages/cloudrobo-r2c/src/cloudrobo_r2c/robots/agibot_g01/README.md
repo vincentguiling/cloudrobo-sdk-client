@@ -71,6 +71,9 @@ pip install "hw-cloudrobo-r2c[client]"
 | `camera_group` | head / hand_left / hand_right | 启用的 G01 相机通道（`head_depth`、`*_fisheye` 等可扩展） |
 | `camera_key_map` | head→cam_high、hand_left→cam_left_wrist、hand_right→cam_right_wrist | G01 通道名 → R2C 图像键 |
 | `camera_poll_interval_s` | 0.03 | 取流轮询间隔（≈30Hz） |
+| `enable_motion_controller` | true | 启用 `RobotController`（《指南》8 章）：末端位姿/关节控制；创建失败自动降级为仅第 7 章关节控制 |
+| `control_lifetime_s` | 1.0 | 第 8 章位姿/关节指令有效时间（秒），超时未收到下一帧则停止 |
+| `pose_control_group` | ["left_arm", "right_arm"] | 位姿控制部位（`set_end_effector_pose_control` 的 control_group） |
 | `dry_run` | false | 适配器级干运行：只打印动作不执行 |
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
 
@@ -79,26 +82,38 @@ pip install "hw-cloudrobo-r2c[client]"
 `body_pose`（整体姿态）维度随整机配置变化，默认不映射，现场确认维度后可仿照
 `extensions.head_joint` 增加（`dtype: FLOAT32` + 固定 `shape`）。
 
-> 接口范围说明：本适配器**仅使用《指南》第 7 章（RobotDds）与第 9 章（CosineCamera）
-> 接口**。"位姿"动作 = 手臂 + 头部 + 腰部多部位关节目标的组合（全身姿态，第 7 章
-> 语义）；末端笛卡尔位姿控制属于第 8 章 `RobotController`，按要求未接入。
+### 控制路由：按 joint_states.names 区分第 7 / 8 章
+
+云端动作的 `joint_states.names` 决定适配器走哪章控制（YAML 已内置 `joint_names` 映射）：
+
+| names 内容 | 章节 | GDK 调用 | position 解析 |
+|---|---|---|---|
+| 双臂关节名（`left_arm_joint_1..7` 等）或缺省 | 7 章 | `move_arm` | 14 个关节角 |
+| 含 `left_pose` / `right_pose` | 8 章 | `set_end_effector_pose_control` | 每个位姿名占 7 维 `[x,y,z,qx,qy,qz,qw]` |
+| 均为部位组名（`left_arm` / `right_arm` 等） | 8 章 | `set_joint_position_control` | 每组 7 关节 |
+
+末端位姿双通道：可在 `joint_states`（names 用 `left_pose`/`right_pose`）或
+`end_effector_poses.pose` 下发；**两条通道同时存在时 joint_states 的位姿优先**。
 
 ### 样例 cloud-adapter：3 组动作往复
 
-`examples/agibot_g01_cloud_adapter.py` 演示云端在 3 组动作之间来回下发（全部为
-第 7 章关节空间动作）：
+`examples/agibot_g01_cloud_adapter.py` 演示云端在 3 组动作之间来回下发
+（真机调试采集的关节目标值，均为第 7 章关节动作）：
 
-- 组 0/1：关节组（双臂 14 关节，从当前关节角线性插值到目标，默认 15 步/chunk），
-  夹爪分别到 `0.15/0.15` 与 `0.85/0.35`（任意角度连续值）
-- 组 2：全身姿态组（手臂 + 头部 `[yaw, pitch]` + 腰部 `[pitch, height_cm]` 一起到达
-  新姿态；头/腰目标经 `Actions.extensions` FLOAT32 下发，适配器解码后调用
-  `move_head`/`move_waist`），夹爪 `0.5/0.8`
+- 关节插值：从当前关节角线性插值到目标，**chunk size = 2 × publish_hz**
+  （默认 30Hz → 60 步，每组执行约 2 秒），避免单步跳变超 0.2618 rad（15°）限幅
+- 夹爪任意角度：三组分别 `0.15/0.15`、`0.85/0.35`、`0.5/0.8`（连续值透传）
 - 往复序列 `0 → 1 → 2 → 1 → 0 → ...`
+- 连接约定（client config）：云端适配器 `endpoint_role: "connect"` 连接 Zenoh 路由
+  `tcp/127.0.0.1:7447`（mode peer）；`project_id` / `device_id` 按现场部署填写
+  （示例默认 `r2c` / `local`），与机器人端取值一致
+- 第 8 章位姿：云端把 names 置为 `["left_pose", "right_pose"]`（position 两个 7 维位姿）
+  或经 `end_effector_poses.pose` 下发即可触发位姿控制（样例默认不发送，真机安全）
 
 ```bash
 # 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
-python examples/agibot_g01_cloud_adapter.py --project-id <pid> --device-id <did> \
-    --steps 15 --duration 60
+python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local \
+    --steps 60 --duration 60
 ```
 
 ## 6. 启动与验证

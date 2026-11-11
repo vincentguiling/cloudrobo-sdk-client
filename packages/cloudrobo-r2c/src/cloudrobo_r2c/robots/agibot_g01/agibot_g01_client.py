@@ -27,10 +27,12 @@ logger = logging.getLogger(__name__)
 
 try:
     from a2d_sdk.robot import CosineCamera as _CosineCamera
+    from a2d_sdk.robot import RobotController as _RobotController
     from a2d_sdk.robot import RobotDds as _RobotDds
 except ImportError as _exc:  # 无 GDK 环境的机器上触发（适配器会给出明确报错）
     _RobotDds = None  # type: ignore[assignment, misc]
     _CosineCamera = None  # type: ignore[assignment, misc]
+    _RobotController = None  # type: ignore[assignment, misc]
     _A2D_IMPORT_ERROR: Optional[ImportError] = _exc
 else:
     _A2D_IMPORT_ERROR = None
@@ -60,18 +62,21 @@ DEFAULT_CAMERA_KEY_MAP: Dict[str, str] = {
 
 
 class AgiBotG01Client:
-    """``a2d_sdk`` ``RobotDds`` + ``CosineCamera`` 的线程安全轻量封装。
+    """``a2d_sdk`` ``RobotDds`` + ``CosineCamera`` + ``RobotController`` 的线程安全轻量封装。
 
-    仅使用《指南》第 7 章（RobotDds）与第 9 章（CosineCamera）接口：
+    接口范围（《指南》）：
 
-    - 生命周期：``connect()`` 创建 ``RobotDds`` 并等待资源初始化；可选创建
-      ``CosineCamera``（后台取流线程）；``close()`` 释放全部资源
-    - 状态查询：``arm_joint_states`` 等方法原样转发 ``(数据, 时间戳)``
-    - 运动控制：``move_arm`` / ``move_gripper`` / ``move_hand`` / ``move_head``
-      / ``move_waist`` / ``move_wheel`` / ``reset``
-    - 相机：``get_camera_images()`` 返回最近一帧非空图像缓存（G01 通道名 → ndarray）
+    - 第 7 章 ``RobotDds``：状态查询原样转发 ``(数据, 时间戳)``；关节空间运动控制
+      ``move_arm`` / ``move_gripper`` / ``move_hand`` / ``move_head`` / ``move_waist``
+      / ``move_wheel`` / ``reset``
+    - 第 8 章 ``RobotController``：末端绝对位姿 ``set_end_effector_pose_control`` 与
+      关节绝对位置控制 ``set_joint_position_control``（由适配器按 ``joint_states.names``
+      路由调用）
+    - 第 9 章 ``CosineCamera``：后台取流线程，``get_camera_images()`` 返回最近一帧
+      非空图像缓存（G01 通道名 → ndarray）
 
-    ``a2d_sdk`` 未安装时 ``connect()`` 抛出带部署指引的 ``RuntimeError``。
+    ``a2d_sdk`` 未安装时 ``connect()`` 抛出带部署指引的 ``RuntimeError``；
+    ``RobotController`` 创建失败仅停用第 8 章能力，不影响第 7 章关节控制。
     """
 
     def __init__(
@@ -81,6 +86,7 @@ class AgiBotG01Client:
         camera_enabled: bool = True,
         init_wait_s: float = 0.5,
         camera_poll_interval_s: float = 0.03,
+        enable_motion_controller: bool = True,
     ) -> None:
         self._lock = threading.RLock()
         self._camera_group: List[str] = list(
@@ -92,9 +98,11 @@ class AgiBotG01Client:
         self._camera_enabled = camera_enabled
         self._init_wait_s = float(init_wait_s)
         self._camera_poll_interval_s = float(camera_poll_interval_s)
+        self._enable_motion_controller = enable_motion_controller
 
         self._robot: Any = None
         self._camera: Any = None
+        self._motion_controller: Any = None
         self._capture_thread: Optional[threading.Thread] = None
         self._running = False
         self._latest_images: Dict[str, np.ndarray] = {}
@@ -132,6 +140,22 @@ class AgiBotG01Client:
                     self._shutdown_robot_safe()
                     self._robot = None
                     raise
+
+            if self._enable_motion_controller:
+                try:
+                    if _RobotController is None:
+                        raise RuntimeError(
+                            "a2d_sdk 未安装，无法初始化 RobotController"
+                        ) from _A2D_IMPORT_ERROR
+                    # 《指南》8.2.2：RobotController() 提供（异步）运动控制接口
+                    self._motion_controller = _RobotController()
+                except Exception as exc:
+                    # 运控器创建失败不阻断第 7 章关节控制链路，只停用第 8 章能力
+                    self._motion_controller = None
+                    logger.warning(
+                        "RobotController init failed; chapter-8 pose/joint control " "disabled: %s",
+                        exc,
+                    )
 
             logger.info(
                 "AgiBot G01 client connected (camera_enabled=%s, camera_group=%s)",
@@ -242,6 +266,52 @@ class AgiBotG01Client:
     def reset(self, **targets: Any) -> None:
         with self._lock:
             self._require_robot().reset(**targets)
+
+    # ------------------------------------------------------------------
+    # 第 8 章 RobotController（末端绝对位姿 / 关节绝对位置控制）
+    # ------------------------------------------------------------------
+
+    def _require_motion_controller(self) -> Any:
+        if self._motion_controller is None:
+            raise RuntimeError(
+                "RobotController 不可用（初始化失败或被禁用），" "第 8 章末端位姿/关节控制不可用"
+            )
+        return self._motion_controller
+
+    def set_end_effector_pose(
+        self,
+        lifetime: float,
+        control_group: Sequence[str],
+        left_pose: Optional[Dict[str, float]] = None,
+        right_pose: Optional[Dict[str, float]] = None,
+    ) -> None:
+        """《指南》8.1：末端绝对位姿控制接口 ``set_end_effector_pose_control``。
+
+        Args:
+            lifetime: 指令有效时间（秒），超时未发送下一帧则停止运动
+            control_group: ``['left_arm','right_arm','dual_arm',...]`` 的子集
+            left_pose / right_pose: ``{x, y, z, qx, qy, qz, qw}`` 位姿 dict，可为 None
+        """
+        with self._lock:
+            self._require_motion_controller().set_end_effector_pose_control(
+                float(lifetime),
+                list(control_group),
+                left_pose=dict(left_pose) if left_pose else None,
+                right_pose=dict(right_pose) if right_pose else None,
+            )
+
+    def set_joint_position_control(self, lifetime: float, joint_group: Dict[str, Any]) -> None:
+        """《指南》8.1：关节绝对位置控制接口 ``set_joint_position_control``。
+
+        Args:
+            lifetime: 指令有效时间（秒）
+            joint_group: 形如 ``{"left_arm": [7 维], "right_arm": [7 维], ...}`` 的
+                部位 → 关节目标 dict（key 可为 GROUP_IDS 任意子集）
+        """
+        with self._lock:
+            self._require_motion_controller().set_joint_position_control(
+                float(lifetime), dict(joint_group)
+            )
 
     # ------------------------------------------------------------------
     # 相机（《指南》9 章）

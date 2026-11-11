@@ -1,12 +1,17 @@
 # AgiBot G01（智元精灵 G01）机器人配置
 #
-# 硬件适配器：cloudrobo_r2c.robots.agibot_g01（GDK RobotDds + CosineCamera）
-# 接口依据《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）与第 9 章（CosineCamera）。
+# 硬件适配器：cloudrobo_r2c.robots.agibot_g01（GDK RobotDds + CosineCamera + RobotController）
+# 接口依据《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）、第 8 章（RobotController）
+# 与第 9 章（CosineCamera）。
 #
 # 前置条件（《指南》第 2 章）：
 # 1. PC 与 G01 同网段，按《指南》部署 GDK 环境（cd a2d_sdk && source env.sh）
 # 2. 机器人处于 Copilot 模式（robot-service -s -c ./conf/copilot.pbtxt）
 # 3. 语义约定：角度一律弧度；腰部高度单位厘米；夹持器 [0,1] 归一化或 [35,120] 原始值
+# 4. 控制路由：云端动作按 joint_states.names 区分——双臂关节名走第 7 章 move_arm；
+#    names 含 left_pose/right_pose（position 按 7 维位姿）走第 8 章末端位姿
+#    （joint_states 位姿优先于 end_effector_poses.pose）；names 均为部位组名
+#    （left_arm/right_arm 等，position 按每组 7 关节）走第 8 章关节控制
 #
 # 启动示例：
 #   cloudrobo r2c client --bundle <cert_config_*.zip> \
@@ -45,6 +50,10 @@ hardware:
       hand_right: "cam_right_wrist"
     # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
     # camera_poll_interval_s: 0.03
+    # 第 8 章 RobotController（末端位姿/关节控制；创建失败自动降级为仅第 7 章关节控制）
+    # enable_motion_controller: true
+    # control_lifetime_s: 1.0         # 第 8 章位姿/关节指令有效时间（秒）
+    # pose_control_group: ["left_arm", "right_arm"]
     # 适配器级干运行：只打印动作不执行（与 runtime.dry_run 任一开启即生效）
     dry_run: true
     commands:
@@ -148,13 +157,20 @@ device_to_r2c:
 
 r2c_to_device:
   mappings:
-    # --- 双臂关节控制（14 维弧度，必选） ---
+    # joint_states.names → 路由依据：适配器按 names 区分第 7 章（关节名）与
+    # 第 8 章（left_pose/right_pose 位姿名、left_arm/right_arm 部位组名）控制
+    - target: "joint_names"
+      source: "joint_states.names"
+      use_assign_dotted: false
+      required: false
+
+    # --- 双臂控制（joint_states.position 前 14 维：关节或位姿，按 names 路由解释） ---
     - target: "arm_cmd_joint_pos"
       source: "joint_states.position"
       slice_start: 0
       slice_end: 14
       use_assign_dotted: false
-      required: true
+      required: false
 
     # --- 夹持器控制（2 通道，必选） ---
     - target: "gripper_cmd_pos"
@@ -162,7 +178,7 @@ r2c_to_device:
       slice_start: 0
       slice_end: 2
       use_assign_dotted: false
-      required: true
+      required: false
 
     # --- 灵巧手 / 头部 / 腰部 / 底盘（可选：云端经 Actions.extensions 下发，缺失自动跳过） ---
     - target: "hand_cmd_joint_pos"
@@ -182,5 +198,17 @@ r2c_to_device:
 
     - target: "wheel_cmd_speed"
       source: "extensions.wheel_cmd"
+      use_assign_dotted: false
+      required: false
+
+    # --- 末端位姿通道二：《指南》8.1 set_end_effector_pose_control（来自 end_effector_poses；
+    #     joint_states 含 left_pose/right_pose 位姿时适配器优先使用 joint_states 的位姿） ---
+    - target: "left_pose_cmd_ee"
+      source: "end_effector_poses.left.pose"
+      use_assign_dotted: false
+      required: false
+
+    - target: "right_pose_cmd_ee"
+      source: "end_effector_poses.right.pose"
       use_assign_dotted: false
       required: false
