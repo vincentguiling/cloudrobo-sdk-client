@@ -71,6 +71,9 @@ pip install "hw-cloudrobo-r2c[client]"
 | `camera_group` | head / hand_left / hand_right | 启用的 G01 相机通道（`head_depth`、`*_fisheye` 等可扩展） |
 | `camera_key_map` | head→cam_high、hand_left→cam_left_wrist、hand_right→cam_right_wrist | G01 通道名 → R2C 图像键 |
 | `camera_poll_interval_s` | 0.03 | 取流轮询间隔（≈30Hz） |
+| `enable_pose_control` | true | 启用 `RobotController`（《指南》8 章）：末端位姿观测/控制与急停；创建失败自动降级为仅关节控制 |
+| `pose_lifetime_s` | 1.0 | 末端位姿指令有效时间（秒），超时未收到下一帧则停止 |
+| `pose_control_group` | ["left_arm", "right_arm"] | 位姿控制部位（`set_end_effector_pose_control` 的 control_group） |
 | `dry_run` | false | 适配器级干运行：只打印动作不执行 |
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
 
@@ -78,6 +81,22 @@ pip install "hw-cloudrobo-r2c[client]"
 仿照现有条目增加 `images.color.*`（或深度用 `images.depth.*` + `ndarray_to_png`）映射。
 `body_pose`（整体姿态）维度随整机配置变化，默认不映射，现场确认维度后可仿照
 `extensions.head_joint` 增加（`dtype: FLOAT32` + 固定 `shape`）。
+
+### 样例 cloud-adapter：3 组动作往复
+
+`examples/agibot_g01_cloud_adapter.py` 演示云端在 3 组动作之间来回下发：
+
+- 组 0/1：关节组（双臂 14 关节，从当前关节角线性插值到目标，默认 15 步/chunk），
+  夹爪分别到 `0.15/0.15` 与 `0.85/0.35`（任意角度连续值）
+- 组 2：末端位姿组（从观测 `end_effector_poses` 读取当前左右末端位姿 + z 向偏移，
+  位姿命令走 `left_pose_cmd`/`right_pose_cmd`），夹爪 `0.5/0.8`
+- 往复序列 `0 → 1 → 2 → 1 → 0 → ...`
+
+```bash
+# 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
+python examples/agibot_g01_cloud_adapter.py --project-id <pid> --device-id <did> \
+    --steps 15 --pose-offset-z 0.05 --duration 60
+```
 
 ## 6. 启动与验证
 
@@ -104,6 +123,11 @@ cloudrobo r2c client \
 
 安全注意（《指南》5.1 / 7.5）：所有角度为弧度，腰部高度单位为厘米；手臂目标关节角与
 实时值差值需小于 0.2618 rad（15°），由上层规划保证；首次上电先 `go_home` 复位验证。
+
+位姿控制说明：适配器末端位姿走《指南》8.1 节 `set_end_effector_pose_control`
+绝对位姿接口；8.2.1 节 `ABS_POSE` 在 trajectory 轨迹接口中标注"当前版本暂不支持"，
+位姿接口的现场可用性以 GDK 实际版本为准（不可用时设置
+`enable_pose_control: false` 可降级为仅关节控制）。
 
 ## 7. 常见问题
 
