@@ -5,16 +5,25 @@
 《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）、第 8 章（RobotController）
 与第 9 章（CosineCamera）。
 
-**第 7 章 / 第 8 章控制按 ``joint_states.names`` 区分**（云端动作的 names 决定路由）：
+**第 7 章 / 第 8 章控制按 ``joint_states.names`` 逐维区分**（云端动作的 names 决定路由，
+互斥与完整性校验不通过时拒绝执行整条动作）：
 
-- names 为双臂关节名（如 ``left_arm_joint_1..7`` / ``right_arm_joint_1..7``，或缺省）
-  → 第 7 章关节控制 ``move_arm``
-- names 含 ``left_pose`` / ``right_pose``（position 按 7 维位姿 ``[x,y,z,qx,qy,qz,qw]``
-  解析）→ 第 8 章末端绝对位姿 ``set_end_effector_pose_control``；末端位姿在
-  ``joint_states`` 与 ``end_effector_poses.pose`` 都可有，**同时存在时 joint_states
-  的位姿优先**
+- names 为双臂关节名 ``left_arm_joint_1..7`` / ``right_arm_joint_1..7``（14 维须齐全，
+  按名回填）→ 第 7 章关节控制 ``move_arm``
+- names 为位姿分量 ``left_pose_x/y/z`` + ``left_pose_rx/ry/rz/rw``（四元数）或
+  ``left_pose_roll/pitch/yaw``（欧拉角，ZYX，内部转换）→ 第 8 章末端绝对位姿
+  ``set_end_effector_pose_control``（各侧分量须完整）；末端位姿在 ``joint_states``
+  与 ``end_effector_poses.pose`` 都可有，**同时存在时 joint_states 的位姿优先**
 - names 为部位组名（``left_arm`` / ``right_arm`` 等，position 按每组 7 关节解析）
   → 第 8 章关节绝对位置控制 ``set_joint_position_control``
+
+**互斥与完整性规则（违反即拒绝执行）**：
+
+- 关节与末端位姿互斥：同一动作不得同时包含关节分量与位姿分量（含经
+  ``end_effector_poses`` 通道下发的位姿）
+- 四元数与欧拉角互斥：同一动作（含左右侧之间）不得混用两种表示
+- 不全不硬执行：关节须 14 维齐全、每组关节须 7 维、位姿各侧分量须完整、
+  夹爪须两侧同时出现，否则拒绝执行（不做补帧兜底）
 
 覆盖部位：
 - 双臂 14 关节（左 7 + 右 7，弧度）
@@ -521,18 +530,19 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     def send_action(self, command: Mapping[str, Any]) -> None:
         """执行云端动作（平铺字段，见模块 docstring；缺失字段自动跳过）。
 
-        ``joint_names``（``joint_states.names``）逐维解析并路由第 7 / 8 章控制：
+        ``joint_names``（``joint_states.names``）逐维解析并路由第 7 / 8 章控制，
+        **互斥与完整性校验不通过时拒绝执行整条动作**：
 
-        - ``left_arm_joint_N`` / ``right_arm_joint_N``（逐维关节，按名回填）→
-          第 7 章 ``move_arm``；names 缺省时按 position 前 14 维兼容解析
+        - ``left_arm_joint_N`` / ``right_arm_joint_N``（逐维关节，须 14 维齐全）→
+          第 7 章 ``move_arm``
         - ``left_pose_x/y/z`` + ``left_pose_rx/ry/rz/rw``（四元数）或
           ``left_pose_roll/pitch/yaw``（欧拉角，ZYX）→ 第 8 章末端位姿
-          ``set_end_effector_pose_control``；与 ``end_effector_poses.pose``
-          同时存在时 joint_states 优先
-        - ``left_gripper`` / ``right_gripper``（逐维夹爪）→ ``move_gripper``
+          ``set_end_effector_pose_control``；须各侧分量完整；与
+          ``end_effector_poses.pose`` 同时存在时 joint_states 优先
+        - ``left_gripper`` / ``right_gripper``（两侧须同时出现）→ ``move_gripper``
           （优先于 ``gripper_cmd_pos`` 通道）
-        - 全部 names 均为部位组名（``left_arm`` / ``right_arm`` 等，每组 7 关节）
-          → 第 8 章 ``set_joint_position_control``
+        - 全部 names 均为部位组名（每组 7 关节）→ 第 8 章 ``set_joint_position_control``
+        - 互斥规则：关节与末端位姿不得混用（含 ee 通道）；四元数与欧拉角不得混用
 
         ``runtime.dry_run``（客户端级）或 ``hardware.config.dry_run``（适配器级）
         开启时只打印不执行。
@@ -558,18 +568,26 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         )
         parsed = self._parse_joint_states_entries(joint_names, position_values)
 
+        # —— 互斥与完整性校验：任一不满足即拒绝执行整条动作 ——
+        reject_reason = self._validate_action_entries(
+            joint_names, parsed, command, position_values
+        )
+        if reject_reason:
+            logger.error("[AgiBotG01] action rejected: %s", reject_reason)
+            return
+
         # —— 双臂/位姿主控制：按 names 解析结果路由第 7 / 8 章 ——
         if parsed["poses"]["left"] or parsed["poses"]["right"]:
-            # 第 8 章末端位姿（joint_states 位姿优先，ee 通道兜底补缺侧）
+            # 第 8 章末端位姿（校验已保证各侧分量完整；ee 通道兜底补缺侧）
             executed += self._apply_ch8_pose(client, parsed["poses"], command)
         elif parsed["groups"]:
-            # 第 8 章关节绝对位置控制（纯组名动作）
+            # 第 8 章关节绝对位置控制（纯组名动作，校验已保证每组 7 关节）
             executed += self._apply_ch8_joints(client, parsed["groups"])
         else:
-            # 第 7 章关节控制（逐维回填；无 names 时按 position 前 14 维兼容）
+            # 第 7 章关节控制（names 须 14 关节齐全；无 names 按 position 前 14 维）
             executed += self._apply_ch7_arm(client, parsed["joints"], position_values)
-            # ee 通道兜底：joint_states 不含位姿名但 end_effector_poses 有位姿时，
-            # 同样走第 8 章末端位姿（joint_states 位姿优先的语义不受影响）
+            # ee 通道兜底：仅当 joint_states 不含任何关节/位姿分量时允许
+            # （关节与末端互斥），且 end_effector_poses 有位姿时走第 8 章
             if "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command:
                 executed += self._apply_ch8_pose(client, {"left": {}, "right": {}}, command)
 
@@ -661,20 +679,13 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             return result
 
         if all(name in JOINT_GROUP_NAMES for name in joint_names):
-            # 组名按每组 7 关节解析（仅支持纯组名动作）
+            # 组名按每组 7 关节解析（仅支持纯组名动作；不足 7 维交由校验拒绝）
             for index, name in enumerate(joint_names):
                 start = index * 7
                 segment = None
-                if position_values is not None and start + 7 <= len(position_values):
+                if position_values is not None and start < len(position_values):
                     segment = position_values[start : start + 7]
-                if segment is not None and len(segment) == 7:
-                    result["groups"][name] = segment
-                else:
-                    logger.warning(
-                        "[AgiBotG01] joint group %r expects 7 values at offset %d; skipped",
-                        name,
-                        start,
-                    )
+                result["groups"][name] = segment if segment is not None else []
             return result
 
         for index, name in enumerate(joint_names):
@@ -706,35 +717,116 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             logger.debug("[AgiBotG01] unrecognized joint_states names: %s", result["unknown"])
         return result
 
+    def _validate_action_entries(
+        self,
+        joint_names: List[str],
+        parsed: Dict[str, Any],
+        command: Mapping[str, Any],
+        position_values: Optional[List[float]],
+    ) -> Optional[str]:
+        """互斥与完整性校验；返回拒绝原因（``None`` 表示通过）。
+
+        规则（任一不满足即拒绝执行整条动作）：
+        - 关节与末端位姿互斥（joint_states 内不得混用；joint_states 含关节时
+          也不得再经 ``end_effector_poses`` 通道下发位姿）
+        - 四元数（``rx/ry/rz/rw``）与欧拉角（``roll/pitch/yaw``）互斥，
+          且左右侧表示须一致
+        - 关节须 14 维齐全、组须 7 关节、位姿分量须完整、夹爪须两侧同时出现
+          ——不全不硬执行
+        - 未知 names 视为协议不一致，拒绝执行
+        """
+        has_pose = bool(parsed["poses"]["left"] or parsed["poses"]["right"])
+        has_joint = bool(parsed["joints"])
+        has_groups = bool(parsed["groups"])
+        has_gripper = bool(parsed["gripper"])
+
+        # 关节与末端位姿互斥（joint_states 内不得混用）
+        if has_pose and (has_joint or has_groups):
+            return "关节与末端位姿互斥：joint_states 同时包含关节与位姿分量"
+
+        # 四元数与欧拉角互斥（逐侧并跨侧一致）
+        if has_pose:
+            reprs = set()
+            for side in ("left", "right"):
+                dims = parsed["poses"][side]
+                if not dims:
+                    continue
+                has_quat = bool({"rx", "ry", "rz", "rw"} & dims.keys())
+                has_euler = bool({"roll", "pitch", "yaw"} & dims.keys())
+                if has_quat and has_euler:
+                    return f"{side}_pose 四元数与欧拉角互斥（同时出现）"
+                if has_quat:
+                    reprs.add("quat")
+                if has_euler:
+                    reprs.add("euler")
+                need = {"x", "y", "z"} | (
+                    {"rx", "ry", "rz", "rw"} if has_quat else {"roll", "pitch", "yaw"}
+                )
+                missing = sorted(need - dims.keys())
+                if missing:
+                    return f"{side}_pose 位姿分量不全，缺少 {missing}，不硬执行"
+                extra = sorted(set(dims.keys()) - need)
+                if extra:
+                    return f"{side}_pose 存在多余分量 {extra}，拒绝执行"
+            if len(reprs) > 1:
+                return "四元数与欧拉角互斥（左右侧表示不一致）"
+
+        # 第 7 章关节须 14 关节齐全（不补帧、不部分执行）
+        if has_joint:
+            missing = sorted(set(range(ARM_DOF)) - set(parsed["joints"]))
+            if missing:
+                return f"双臂关节不全（14 维须齐全），缺少索引 {missing}，不硬执行"
+        if has_groups:
+            for name, segment in parsed["groups"].items():
+                if len(segment) != 7:
+                    return f"部位组 {name} 关节不全（须 7 维），不硬执行"
+
+        # 夹爪两侧须同时出现
+        if has_gripper and (
+            "left" not in parsed["gripper"] or "right" not in parsed["gripper"]
+        ):
+            return "夹爪不全：left_gripper 与 right_gripper 须同时出现，不硬执行"
+
+        # 未知 names 视为协议不一致
+        if parsed["unknown"]:
+            return f"存在无法识别的 joint_states names: {parsed['unknown']}"
+
+        # 关节与末端互斥（ee 通道）
+        ee_pose_present = "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command
+        if ee_pose_present and (has_joint or has_groups):
+            return (
+                "关节与末端位姿互斥：joint_states 含关节分量时不得经 "
+                "end_effector_poses 下发位姿"
+            )
+
+        # 旧位置式兼容：无 names 时 position 须含前 14 维双臂关节
+        if (
+            not joint_names
+            and not (has_pose or has_groups or has_gripper)
+            and position_values is not None
+            and len(position_values) < ARM_DOF
+        ):
+            return (
+                f"双臂关节不全（无 names 时 position 前 {ARM_DOF} 维须齐全），不硬执行"
+            )
+        return None
+
     def _apply_ch7_arm(
         self,
         client: AgiBotG01Client,
         joints_by_idx: Dict[int, float],
         position_values: Optional[List[float]],
     ) -> List[str]:
-        """第 7 章双臂关节控制：按 names 逐维回填（缺省沿用上一帧值）。
-
-        无 names 时按 position 前 14 维兼容解析（旧位置式格式）。
-        """
+        """第 7 章双臂关节控制（校验已保证 14 关节齐全或走旧位置式兼容）。"""
         if joints_by_idx:
-            base = self._last_observation.get("joint_positions")
-            if base is not None and len(base) == ARM_DOF:
-                arm = np.asarray(base, dtype=np.float64).copy()
-            else:
-                arm = np.zeros(ARM_DOF, dtype=np.float64)
+            arm = [0.0] * ARM_DOF
             for idx, value in joints_by_idx.items():
                 arm[idx] = value
-            client.move_arm(arm.tolist())
+            client.move_arm(arm)
             return ["joint_states_arm"]
-        if position_values is not None:
-            if len(position_values) >= ARM_DOF:
-                client.move_arm(position_values[:ARM_DOF])
-                return ["arm_cmd_joint_pos"]
-            logger.warning(
-                "[AgiBotG01] arm_cmd_joint_pos expects %d values, got %d; skipped",
-                ARM_DOF,
-                len(position_values),
-            )
+        if position_values is not None and len(position_values) >= ARM_DOF:
+            client.move_arm(position_values[:ARM_DOF])
+            return ["arm_cmd_joint_pos"]
         return []
 
     def _apply_ch8_pose(
