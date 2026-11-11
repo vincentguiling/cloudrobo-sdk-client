@@ -684,7 +684,26 @@ def test_route_pose_priority_joint_states_over_ee():
 
 
 def test_route_pose_fallback_to_ee_channel():
-    # joint_states 不含位姿名，末端位姿经 end_effector_poses.pose 下发
+    # joint_states 仅夹爪分量（无关节/位姿分量）→ ee 通道位姿兜底 + 夹爪下发
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_gripper", "right_gripper"],
+            "arm_cmd_joint_pos": [0.3, 0.3],
+            "left_pose_cmd_ee": LEFT_POSE,
+            "right_pose_cmd_ee": RIGHT_POSE,
+        }
+    )
+    assert any(c[0] == "move_gripper" for c in _last_robot().calls)
+    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    )
+    assert right_pose is not None
+
+
+def test_route_reject_joint_and_ee_pose_together():
+    # 关节与末端互斥：joint_states 含关节分量时不得经 ee 通道下发位姿
     adapter = _connect()
     adapter.send_action(
         {
@@ -695,13 +714,99 @@ def test_route_pose_fallback_to_ee_channel():
             "right_pose_cmd_ee": RIGHT_POSE,
         }
     )
-    # 关节走第 7 章，位姿走第 8 章
-    assert any(c[0] == "move_arm" for c in _last_robot().calls)
-    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+    assert _last_controller().pose_calls == []
+
+
+def test_route_reject_mixed_joint_and_pose_names():
+    # 关节与末端互斥：同一动作不得同时包含关节分量与位姿分量
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
+            + [f"right_arm_joint_{i}" for i in range(1, 8)]
+            + ["left_pose_x", "left_pose_y", "left_pose_z"]
+            + ["left_pose_rx", "left_pose_ry", "left_pose_rz", "left_pose_rw"]
+            + ["right_pose_x", "right_pose_y", "right_pose_z"]
+            + ["right_pose_rx", "right_pose_ry", "right_pose_rz", "right_pose_rw"],
+            "arm_cmd_joint_pos": [0.1] * ARM_DOF + LEFT_POSE + RIGHT_POSE,
+        }
     )
-    assert right_pose is not None
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+    assert _last_controller().pose_calls == []
+    assert _last_controller().joint_calls == []
+
+
+def test_route_reject_mixed_quat_and_euler():
+    # 四元数与欧拉角互斥：同一侧同时出现两种表示 → 拒绝
+    adapter = _connect()
+    names = ["left_pose_x", "left_pose_y", "left_pose_z", "left_pose_rx"]
+    names += ["left_pose_roll", "left_pose_pitch", "left_pose_yaw"]
+    adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": [0.1] * 7})
+    assert _last_controller().pose_calls == []
+
+    # 跨侧表示不一致同样拒绝
+    names = _pose_dim_names("left") + [
+        "right_pose_x",
+        "right_pose_y",
+        "right_pose_z",
+        "right_pose_roll",
+        "right_pose_pitch",
+        "right_pose_yaw",
+    ]
+    adapter.send_action(
+        {"joint_names": names, "arm_cmd_joint_pos": LEFT_POSE + [0.1] * 6}
+    )
+    assert _last_controller().pose_calls == []
+
+
+def test_route_reject_partial_joints():
+    # 关节不全（仅 6 个关节名）→ 不硬执行（不做补帧兜底）
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 7)],
+            "arm_cmd_joint_pos": [0.1] * 6,
+        }
+    )
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+
+
+def test_route_reject_partial_group():
+    # 组关节数不全（每组须 7 维）→ 拒绝
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_arm", "right_arm"],
+            "arm_cmd_joint_pos": [0.1] * 7 + [0.2] * 5,  # right_arm 仅 5 维
+        }
+    )
+    assert _last_controller().joint_calls == []
+
+
+def test_route_reject_partial_gripper():
+    # 夹爪仅一侧 → 不硬执行
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_gripper"],
+            "arm_cmd_joint_pos": [0.25],
+        }
+    )
+    assert not any(c[0] == "move_gripper" for c in _last_robot().calls)
+
+
+def test_route_reject_unknown_names():
+    # 未知 names 视为协议不一致 → 拒绝执行
+    adapter = _connect()
+    adapter.send_action(
+        {
+            "joint_names": ["left_pose_w", "right_pose_w"],
+            "arm_cmd_joint_pos": [0.1, 0.1],
+        }
+    )
+    assert _last_controller().pose_calls == []
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
 
 
 def test_route_joints8_via_group_names():
@@ -862,12 +967,13 @@ def test_example_ch8_demo_groups():
     assert row[:7] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
     assert row[7:14] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
     assert row[14:] == pytest.approx([0.3, 0.3])  # 夹爪保持当前角度
-    # 组 4：ee 通道（joint_states 保持当前关节）
+    # 组 4：ee 通道（关节与末端互斥 → joint_states 仅携带夹爪分量）
     a6 = next_action()
     assert list(a6.end_effector_poses["left"].pose[0]) == pytest.approx(
         [0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0]
     )
-    assert a6.joint_states.position[0] == pytest.approx([0.1] * ARM_DOF)
+    assert a6.joint_states.names == ["left_gripper", "right_gripper"]
+    assert a6.joint_states.position[0] == pytest.approx([0.3, 0.3])
     # 组 5：组名关节（复用 GROUP_C 真机值）
     a7 = next_action()
     assert a7.joint_states.names == ["left_arm", "right_arm"]

@@ -89,13 +89,20 @@ pip install "hw-cloudrobo-r2c[client]"
 
 | names 逐维内容 | 章节 | GDK 调用 | 说明 |
 |---|---|---|---|
-| `left_arm_joint_1..7` / `right_arm_joint_1..7`（或缺省） | 7 章 | `move_arm` | 关节角按名回填，缺省沿用上一帧值 |
-| `left_pose_x/y/z` + `left_pose_rx/ry/rz/rw`（四元数） | 8 章 | `set_end_effector_pose_control` | 重组为 7 维位姿 |
+| `left_arm_joint_1..7` / `right_arm_joint_1..7`（须 14 维齐全） | 7 章 | `move_arm` | 关节角按名回填；**不全不硬执行** |
+| `left_pose_x/y/z` + `left_pose_rx/ry/rz/rw`（四元数） | 8 章 | `set_end_effector_pose_control` | 各侧分量须完整，内部无补帧 |
 | `left_pose_x/y/z` + `left_pose_roll/pitch/yaw`（欧拉角，ZYX） | 8 章 | 同上 | 内部转换为四元数 |
-| `left_gripper` / `right_gripper` | 7 章 | `move_gripper` | 两侧都给才下发（优先于 `gripper_cmd_pos` 通道） |
+| `left_gripper` / `right_gripper`（两侧须同时出现） | 7 章 | `move_gripper` | 优先于 `gripper_cmd_pos` 通道 |
 | 全部为部位组名（`left_arm` / `right_arm` 等，每组 7 关节） | 8 章 | `set_joint_position_control` | 组名路由 |
 
-多种 names 可混合出现在同一动作中（如 位姿分量 + 夹爪分量 同时下发）。
+**互斥与完整性规则（违反即拒绝执行整条动作，不做补帧兜底）**：
+
+- 关节与末端位姿互斥：同一动作不得同时包含关节分量与位姿分量（含经
+  `end_effector_poses` 通道下发的位姿）
+- 四元数与欧拉角互斥：同一动作内不得混用两种表示（左右侧之间也须一致）
+- 不全不硬执行：关节须 14 维齐全、每组关节须 7 维、位姿各侧分量须完整、
+  夹爪须两侧同时出现，否则拒绝执行
+- 未知 names 视为协议不一致，拒绝执行
 
 ### 观测镜像：位姿与夹爪复制进 joint_states
 
