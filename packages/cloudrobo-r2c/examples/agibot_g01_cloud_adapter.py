@@ -75,6 +75,12 @@ POSE_DOF = 7  # 末端位姿维度 [x, y, z, qx, qy, qz, qw]（《指南》8.1�
 INTERP_STEPS = int(2 * PUBLISH_HZ)
 
 
+def _pose_dim_names(side: str) -> List[str]:
+    """逐维位姿 names（四元数表示）：left_pose_x/y/z/rx/ry/rz/rw。"""
+    dims = ["x", "y", "z", "rx", "ry", "rz", "rw"]
+    return [f"{side}_pose_{d}" for d in dims]
+
+
 def _pack_ext(values: Sequence[float]) -> Dict[str, Any]:
     """把一维数值打包为 extension dict（FLOAT32，适配器侧负责解码）。"""
     return {
@@ -348,7 +354,11 @@ class ThreeGroupActionCycler:
         current_poses: Optional[Dict[str, Sequence[float]]],
         current_gripper: Optional[Sequence[float]],
     ) -> Optional[Actions]:
-        """组 D：末端位姿经 joint_states names 路由（names=left_pose/right_pose）。"""
+        """组 D：末端位姿 + 夹爪均经 joint_states 逐维 names 路由。
+
+        names = ``left_pose_x/y/z/rx/ry/rz/rw`` + ``right_pose_*`` +
+        ``left_gripper`` / ``right_gripper``，position 与 names 一一对应。
+        """
         poses = current_poses or {}
         left = poses.get("left")
         right = poses.get("right")
@@ -360,14 +370,21 @@ class ThreeGroupActionCycler:
             )
             return None
         offset = group["pose_offset"]
-        position_row = self._offset_pose(left, offset) + self._offset_pose(right, offset)
         hold_gripper = list(current_gripper) if current_gripper else [0.5, 0.8]
+        names = (
+            _pose_dim_names("left") + _pose_dim_names("right") + ["left_gripper", "right_gripper"]
+        )
+        position_row = (
+            self._offset_pose(left, offset)
+            + self._offset_pose(right, offset)
+            + [float(v) for v in hold_gripper]
+        )
 
         payload: Dict[str, Any] = {
             "timestamp": now_ms,
             "chunk_size": self._steps,
             "joint_states": {
-                "names": ["left_pose", "right_pose"],  # names 路由 → 第 8 章末端位姿
+                "names": names,  # names 路由 → 第 8 章末端位姿 + 夹爪
                 "position": self._hold_chunk(position_row, self._steps),
                 "velocity": [],
                 "torque": [],
@@ -383,11 +400,12 @@ class ThreeGroupActionCycler:
             "extensions": {},
         }
         logger.info(
-            "[%s] group=%s left_pose=%s right_pose=%s (via joint_states names)",
+            "[%s] group=%s left_pose=%s right_pose=%s gripper=%s (via joint_states names)",
             ADAPTER_NAME,
             group["name"],
-            np.round(position_row[:POSE_DOF], 3).tolist(),
-            np.round(position_row[POSE_DOF:], 3).tolist(),
+            np.round(self._offset_pose(left, offset), 3).tolist(),
+            np.round(self._offset_pose(right, offset), 3).tolist(),
+            hold_gripper,
         )
         return Actions.from_dict(payload)
 
