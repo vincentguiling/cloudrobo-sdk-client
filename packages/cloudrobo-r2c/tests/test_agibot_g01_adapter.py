@@ -345,6 +345,9 @@ def test_observation_exposes_ee_poses():
     # 合并字段 ee_poses：按 left、right 顺序
     assert obs["ee_poses"][0] == pytest.approx(obs["left_ee_pose"])
     assert obs["ee_poses"][1] == pytest.approx(obs["right_ee_pose"])
+    # 镜像进 joint_states 所需的平铺字段（names 与动作位姿路由约定一致）
+    assert obs["ee_pose_names"] == ["left_pose", "right_pose"]
+    assert obs["ee_poses_flat"] == pytest.approx(obs["left_ee_pose"] + obs["right_ee_pose"])
 
 
 def test_observation_ee_poses_absent_without_motion_status():
@@ -481,8 +484,16 @@ def test_robot_config_yaml_translates_observation_and_action():
     obs = adapter.get_observation()
     observation = translator.device_to_r2c(obs)
     assert isinstance(observation, Observations)
-    assert len(observation.joint_states.position) == ARM_DOF
-    assert observation.joint_states.names[0] == "left_arm_joint_1"
+    # joint_states：14 关节 + 末端位姿镜像（left_pose/right_pose 各 7 维）
+    assert len(observation.joint_states.position) == 2 * ARM_DOF
+    assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint_1"
+    assert list(observation.joint_states.names[ARM_DOF:]) == ["left_pose", "right_pose"]
+    assert observation.joint_states.position[ARM_DOF:ARM_DOF + 7] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
+    )
+    assert observation.joint_states.position[ARM_DOF + 7:] == pytest.approx(
+        [0.13, -0.89, 0.85, 0.0, -0.7071, 0.7071, 0.0]
+    )
     assert len(observation.end_effector_states.position) == GRIPPER_DOF
     # 相机映射为 JPEG 字节
     jpeg = observation.images.color.get("cam_high")

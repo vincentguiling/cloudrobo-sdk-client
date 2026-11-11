@@ -403,6 +403,17 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         ee_poses = [pose for pose in (left, right) if pose is not None]
         if ee_poses:
             observation["ee_poses"] = ee_poses
+            # 供 device_to_r2c 镜像进 joint_states（names 追加 left_pose/right_pose，
+            # 与动作侧位姿路由的 names 约定一致；position 追加扁平化位姿值；
+            # 均仅在位姿可用时产出）
+            observation["ee_pose_names"] = [
+                route_name
+                for route_name, pose in (("left_pose", left), ("right_pose", right))
+                if pose is not None
+            ]
+            observation["ee_poses_flat"] = [
+                float(v) for pose in ee_poses for v in pose
+            ]
 
     @staticmethod
     def _frame_to_pose7d(frame: Any) -> Optional[List[float]]:
