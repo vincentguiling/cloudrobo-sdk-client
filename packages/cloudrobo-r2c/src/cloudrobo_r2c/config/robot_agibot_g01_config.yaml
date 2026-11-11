@@ -1,0 +1,185 @@
+# AgiBot G01（智元精灵 G01）机器人配置
+#
+# 硬件适配器：cloudrobo_r2c.robots.agibot_g01（GDK RobotDds + CosineCamera）
+# 接口依据《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）与第 9 章（CosineCamera）。
+#
+# 前置条件（《指南》第 2 章）：
+# 1. PC 与 G01 同网段，按《指南》部署 GDK 环境（cd a2d_sdk && source env.sh）
+# 2. 机器人处于 Copilot 模式（robot-service -s -c ./conf/copilot.pbtxt）
+# 3. 语义约定：角度一律弧度；腰部高度单位厘米；夹持器 [0,1] 归一化或 [35,120] 原始值
+#
+# 启动示例：
+#   cloudrobo r2c client --bundle <cert_config_*.zip> \
+#       --robot-config config/robot_agibot_g01_config.yaml
+#
+# 安全提示：runtime.dry_run 默认 true（观测正常发布，动作只打日志不执行）；
+# 现场验证无误后再改为 false 真实执行。
+schema_version: "v2.1"
+
+runtime:
+  publish_hz: 30.0
+  max_duration_s: 0.0
+  action_response_timeout_s: 30.0
+  dry_run: true
+  heartbeat:
+    enabled: true
+    interval_ms: 5000
+    jitter_ms: 500
+  keyboard_control:
+    enabled: false
+
+hardware:
+  type: "agibot_g01"
+  config:
+    # RobotDds 初始化等待秒数（《指南》7.4：等待资源初始化，收到消息）
+    init_wait_s: 0.5
+    # 相机开关与启用的 G01 相机通道（《指南》9.1：head / hand_left / hand_right /
+    # head_depth / *_fisheye 等）
+    camera_enabled: true
+    camera_group: ["head", "hand_left", "hand_right"]
+    # G01 通道名 → R2C 图像键（images.color.<key>；与 moz1 等适配器的命名约定一致）
+    camera_key_map:
+      head: "cam_high"
+      hand_left: "cam_left_wrist"
+      hand_right: "cam_right_wrist"
+    # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
+    # camera_poll_interval_s: 0.03
+    # 适配器级干运行：只打印动作不执行（与 runtime.dry_run 任一开启即生效）
+    # dry_run: false
+    commands:
+      # 复位指令（keyboard_control / 命令系统可触发；全零为示例，请按需修改）
+      go_home:
+        type: "go_home"
+        arm_positions: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+translator:
+  type: "configurable"
+
+device_to_r2c:
+  task: "move dual arms to target position"
+  image_encoding: "jpeg"
+  mappings:
+    # --- 双臂 14 关节（左 7 + 右 7，弧度） ---
+    - target_key: "joint_states.names"
+      default:
+        - "left_arm_joint_1"
+        - "left_arm_joint_2"
+        - "left_arm_joint_3"
+        - "left_arm_joint_4"
+        - "left_arm_joint_5"
+        - "left_arm_joint_6"
+        - "left_arm_joint_7"
+        - "right_arm_joint_1"
+        - "right_arm_joint_2"
+        - "right_arm_joint_3"
+        - "right_arm_joint_4"
+        - "right_arm_joint_5"
+        - "right_arm_joint_6"
+        - "right_arm_joint_7"
+
+    - target_key: "joint_states.position"
+      source: "joint_positions"
+      transforms: array_to_list
+
+    - target_key: "joint_states.velocity"
+      default: []
+
+    - target_key: "joint_states.torque"
+      default: []
+
+    # --- 夹持器（左、右 2 通道） ---
+    - target_key: "end_effector_states.names"
+      default: ["left_gripper", "right_gripper"]
+
+    - target_key: "end_effector_states.position"
+      source: "gripper_positions"
+      transforms: array_to_list
+
+    - target_key: "end_effector_states.force"
+      default: []
+
+    # --- 末端位姿（GDK 第 7 章未提供，置空） ---
+    - target_key: "end_effector_poses.names"
+      default: []
+    - target_key: "end_effector_poses.pose"
+      default: []
+
+    # --- 相机（色彩通道；深度通道可仿照增加 images.depth.* 映射） ---
+    - target_key: "images.color.cam_high"
+      source_path: "cam_high"
+      transforms: ndarray_to_jpeg
+      required: false
+
+    - target_key: "images.color.cam_left_wrist"
+      source_path: "cam_left_wrist"
+      transforms: ndarray_to_jpeg
+      required: false
+
+    - target_key: "images.color.cam_right_wrist"
+      source_path: "cam_right_wrist"
+      transforms: ndarray_to_jpeg
+      required: false
+
+    # --- 头部 / 腰部 / 灵巧手 / 整体姿态 → extensions（float32 一维数组） ---
+    - target: "extensions.head_joint"
+      source_path: "head_joint_positions"
+      extension:
+        dtype: FLOAT32
+        shape: [2]
+      required: false
+
+    - target: "extensions.waist_joint"
+      source_path: "waist_joint_positions"
+      extension:
+        dtype: FLOAT32
+        shape: [2]
+      required: false
+
+    - target: "extensions.hand_joint"
+      source_path: "hand_joint_positions"
+      extension:
+        dtype: FLOAT32
+        shape: [12]
+      required: false
+
+    # 整体姿态（body_pose）维度随整机配置变化，且 extension shape 不支持变长（-1），
+    # 默认不映射；现场确认维度后可仿照 head_joint 增加（dtype FLOAT32, shape: [维度]）。
+
+r2c_to_device:
+  mappings:
+    # --- 双臂关节控制（14 维弧度，必选） ---
+    - target: "arm_cmd_joint_pos"
+      source: "joint_states.position"
+      slice_start: 0
+      slice_end: 14
+      use_assign_dotted: false
+      required: true
+
+    # --- 夹持器控制（2 通道，必选） ---
+    - target: "gripper_cmd_pos"
+      source: "end_effector_states.position"
+      slice_start: 0
+      slice_end: 2
+      use_assign_dotted: false
+      required: true
+
+    # --- 灵巧手 / 头部 / 腰部 / 底盘（可选：云端经 Actions.extensions 下发，缺失自动跳过） ---
+    - target: "hand_cmd_joint_pos"
+      source: "extensions.hand_joint"
+      use_assign_dotted: false
+      required: false
+
+    - target: "head_cmd_joint_pos"
+      source: "extensions.head_joint"
+      use_assign_dotted: false
+      required: false
+
+    - target: "waist_cmd_joint_pos"
+      source: "extensions.waist_joint"
+      use_assign_dotted: false
+      required: false
+
+    - target: "wheel_cmd_speed"
+      source: "extensions.wheel_cmd"
+      use_assign_dotted: false
+      required: false
