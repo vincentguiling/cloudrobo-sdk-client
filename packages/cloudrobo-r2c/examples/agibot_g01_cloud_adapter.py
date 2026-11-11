@@ -1,19 +1,26 @@
-"""AgiBot G01 样例 cloud-adapter：在 3 组动作之间来回运动。
+"""AgiBot G01 样例 cloud-adapter：在多组动作之间来回运动。
 
-配合机器人端 ``config/robot_agibot_g01_config.yaml`` 使用。当前三组均为
+配合机器人端 ``config/robot_agibot_g01_config.yaml`` 使用。默认三组为
 《指南》第 7 章 ``RobotDds`` 关节空间动作（``move_arm`` / ``move_gripper``，
 真机调试采集的目标值）：
 
 - **夹爪任意角度**：夹爪值连续任意（默认归一化 ``[0, 1]``，也可用 ``[35, 120]``
-  原始值），随组切换到不同开度
+  原始值），随组切换到不同开度（用最终角度，不插值）
 - **往复运动**：组序列 ``0 → 1 → 2 → 1 → 0 → ...`` 来回循环；关节部分从当前
   关节角线性插值到目标（chunk size = 2 × publish_hz，每组执行约 2 秒），
   避免目标跳变超过 0.2618 rad（15°）限幅
-- **第 8 章末端位姿**：机器人端适配器按 ``joint_states.names`` 路由——云端把
-  names 置为 ``["left_pose", "right_pose"]``（position 为两个 7 维位姿
-  ``[x,y,z,qx,qy,qz,qw]``）或经 ``end_effector_poses.pose`` 下发即可触发
-  ``set_end_effector_pose_control``；两条通道同时存在时 joint_states 优先。
-  本样例默认不发送位姿（真机安全），需要时按上述格式构造即可。
+
+**第 8 章示例组（``--include-ch8`` 启用）**——按 ``joint_states.names`` 路由的三种
+新格式演示（序列 ``0→1→2→1 → 3→4→5→4 → ...``）：
+
+- 组 3 ``ch8_pose(joint_states位姿)``：names = ``["left_pose", "right_pose"]``，
+  position 为两个 7 维位姿 ``[x,y,z,qx,qy,qz,qw]`` → ``set_end_effector_pose_control``
+- 组 4 ``ch8_pose(ee通道)``：joint_states 保持当前关节，位姿经 ``end_effector_poses``
+  通道下发（演示双通道兜底：joint_states 位姿存在时优先）
+- 组 5 ``ch8_joints(组名关节)``：names = ``["left_arm", "right_arm"]``，position 按每组
+  7 关节解析 → ``set_joint_position_control``
+- 位姿目标 = 观测中的当前末端位姿（``end_effector_poses``）+ z 向偏移（默认 +5cm），
+  观测无位姿时自动跳过该轮；首次启用建议机器人端保持 ``dry_run: true`` 观察一轮
 
 连接约定（client config）：云端适配器 ``endpoint_role: connect`` 连接 Zenoh 路由
 ``tcp/127.0.0.1:7447``，``project_id`` / ``device_id`` 按现场部署填写（默认
@@ -24,6 +31,7 @@
     python examples/agibot_g01_cloud_adapter.py
     python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local
     python examples/agibot_g01_cloud_adapter.py --duration 60 --steps 60
+    python examples/agibot_g01_cloud_adapter.py --include-ch8 --pose-offset-z 0.05
 
 安全提示：机器人端请先以 ``runtime.dry_run: true`` 验证数据链路与动作序列，
 确认无误后再改为 ``false`` 真实执行。
@@ -35,7 +43,7 @@ import argparse
 import logging
 import struct
 import time
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 from _cloud_adapter_common import build_parser, normalize_for_logging
@@ -62,6 +70,7 @@ ARM_DOF = 14
 GRIPPER_DOF = 2
 HEAD_DOF = 2
 WAIST_DOF = 2
+POSE_DOF = 7  # 末端位姿维度 [x, y, z, qx, qy, qz, qw]（《指南》8.1）
 # chunk size 一般为 2 倍 publish_hz（每组动作执行约 2 秒）
 INTERP_STEPS = int(2 * PUBLISH_HZ)
 
@@ -156,19 +165,64 @@ GROUP_C = {
 # 往复序列：0 → 1 → 2 → 1 → 0 → 1 → 2 → ...（来回）
 CYCLE_SEQUENCE = [0, 1, 2, 1]
 
+# ---------------------------------------------------------------------------
+# 第 8 章示例组（--include-ch8 启用）：names 路由的三种新格式演示
+# 真机注意：位姿目标基于当前观测末端位姿 + z 向偏移，组名关节复用 GROUP_C 真机值；
+# 首次启用建议机器人端保持 dry_run: true 观察一轮。
+# ---------------------------------------------------------------------------
+
+# 组 3：末端位姿（经 joint_states names 路由）——
+# names=["left_pose","right_pose"]，position 为两个 7 维位姿 [x,y,z,qx,qy,qz,qw]
+GROUP_D = {
+    "name": "ch8_pose(joint_states位姿)",
+    "kind": "pose_joints_names",
+    "pose_offset": [0.0, 0.0, 0.05],  # 基于当前末端位姿的 [x, y, z] 偏移（米）
+}
+
+# 组 4：末端位姿（经 end_effector_poses.pose 通道）——
+# joint_states 保持当前关节角不动，位姿经 end_effector_poses 下发
+# （演示双通道：joint_states 位姿存在时优先，本组无 joint_states 位姿 → 走 ee 通道）
+GROUP_E = {
+    "name": "ch8_pose(ee通道)",
+    "kind": "pose_ee_channel",
+    "pose_offset": [0.0, 0.0, 0.05],
+}
+
+# 组 5：第 8 章关节控制（经部位组名路由）——
+# names=["left_arm","right_arm"]，position 按每组 7 关节解析 → set_joint_position_control
+# 关节目标复用 GROUP_C 真机值（左 7 + 右 7）
+GROUP_F = {
+    "name": "ch8_joints(组名关节)",
+    "kind": "joints8_groups",
+    "gripper": [0.5, 0.8],
+}
+
+# 启用第 8 章示例时的往复序列：0→1→2→1→ 3→4→5→4 → 0→1→2→1 → ...
+CH8_CYCLE_SEQUENCE = [0, 1, 2, 1, 3, 4, 5, 4]
+
 
 class ThreeGroupActionCycler:
-    """在 3 组动作之间往复生成 Actions（关节插值、全身姿态组、夹爪任意角度）。"""
+    """在多组动作之间往复生成 Actions（关节插值、夹爪任意角度、可选第 8 章示例组）。"""
 
     def __init__(
         self,
         steps: int = INTERP_STEPS,
         sequence: Sequence[int] = CYCLE_SEQUENCE,
+        include_ch8: bool = False,
+        pose_offset_z: float = 0.05,
     ) -> None:
         self._steps = max(int(steps), 1)
         self._sequence = list(sequence)
         self._cycle_index = 0
-        self._groups = [GROUP_A, GROUP_B, GROUP_C]
+        self._groups: List[Dict[str, Any]] = [GROUP_A, GROUP_B, GROUP_C]
+        if include_ch8:
+            group_d = dict(GROUP_D)
+            group_e = dict(GROUP_E)
+            for group in (group_d, group_e):
+                group["pose_offset"] = [0.0, 0.0, float(pose_offset_z)]
+            group_f = dict(GROUP_F)
+            group_f["joints"] = list(GROUP_C["joints"])  # 复用真机关节值
+            self._groups += [group_d, group_e, group_f]
 
     def next_group_index(self) -> int:
         index = self._sequence[self._cycle_index % len(self._sequence)]
@@ -180,10 +234,31 @@ class ThreeGroupActionCycler:
         now_ms: int,
         current_joints: Optional[Sequence[float]],
         current_gripper: Optional[Sequence[float]],
-    ) -> Actions:
-        """按下一组动作构建 Actions（关节部分线性插值，全身姿态组附带头/腰目标）。"""
+        current_poses: Optional[Dict[str, Sequence[float]]] = None,
+    ) -> Optional[Actions]:
+        """按下一组动作构建 Actions；第 8 章位姿组缺当前末端位姿时跳过本轮（返回 None）。"""
         group = self._groups[self.next_group_index()]
+        kind = group.get("kind", "joints")
 
+        if kind == "pose_joints_names":
+            return self._build_pose_via_names(now_ms, group, current_poses, current_gripper)
+        if kind == "pose_ee_channel":
+            return self._build_pose_via_ee(
+                now_ms, group, current_joints, current_gripper, current_poses
+            )
+        if kind == "joints8_groups":
+            return self._build_joints8_groups(now_ms, group, current_gripper)
+        return self._build_joint_action(now_ms, group, current_joints, current_gripper)
+
+    # -- 第 7 章关节组（现有主链路） ----------------------------------------------
+
+    def _build_joint_action(
+        self,
+        now_ms: int,
+        group: Dict[str, Any],
+        current_joints: Optional[Sequence[float]],
+        current_gripper: Optional[Sequence[float]],
+    ) -> Actions:
         target = np.asarray(group["joints"], dtype=float)
         gripper_target = np.asarray(group["gripper"], dtype=float)
         start_joints = np.asarray(current_joints or target, dtype=float)
@@ -205,7 +280,7 @@ class ThreeGroupActionCycler:
             for i in range(steps)
         ]
         gripper_chunk = [
-            # (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            # 夹爪用最终角度，不插值（真机调试结论）
             (gripper_target).tolist()
             for i in range(steps)
         ]
@@ -251,10 +326,169 @@ class ThreeGroupActionCycler:
         )
         return Actions.from_dict(payload)
 
+    # -- 第 8 章示例组（names 路由的三种格式） ------------------------------------
+
+    def _offset_pose(self, pose: Sequence[float], offset: Sequence[float]) -> List[float]:
+        """当前末端位姿 + xyz 偏移（姿态四元数保持）。"""
+        moved = [float(v) for v in pose]
+        moved[0] += float(offset[0])
+        moved[1] += float(offset[1])
+        moved[2] += float(offset[2])
+        return moved
+
+    def _hold_chunk(self, values: Sequence[float], steps: int) -> List[List[float]]:
+        """整块保持同一目标值（每组动作执行约 2 秒的持续指令）。"""
+        row = [float(v) for v in values]
+        return [list(row) for _ in range(steps)]
+
+    def _build_pose_via_names(
+        self,
+        now_ms: int,
+        group: Dict[str, Any],
+        current_poses: Optional[Dict[str, Sequence[float]]],
+        current_gripper: Optional[Sequence[float]],
+    ) -> Optional[Actions]:
+        """组 D：末端位姿经 joint_states names 路由（names=left_pose/right_pose）。"""
+        poses = current_poses or {}
+        left = poses.get("left")
+        right = poses.get("right")
+        if left is None or right is None or len(left) != POSE_DOF or len(right) != POSE_DOF:
+            logger.warning(
+                "[%s] group=%s missing ee poses in observation, skip this round",
+                ADAPTER_NAME,
+                group["name"],
+            )
+            return None
+        offset = group["pose_offset"]
+        position_row = self._offset_pose(left, offset) + self._offset_pose(right, offset)
+        hold_gripper = list(current_gripper) if current_gripper else [0.5, 0.8]
+
+        payload: Dict[str, Any] = {
+            "timestamp": now_ms,
+            "chunk_size": self._steps,
+            "joint_states": {
+                "names": ["left_pose", "right_pose"],  # names 路由 → 第 8 章末端位姿
+                "position": self._hold_chunk(position_row, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            "end_effector_poses": {},
+            "end_effector_states": {
+                "names": list(GRIPPER_NAMES),
+                "position": self._hold_chunk(hold_gripper, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            "localization": {"odom_pose": [], "map_pose": []},
+            "extensions": {},
+        }
+        logger.info(
+            "[%s] group=%s left_pose=%s right_pose=%s (via joint_states names)",
+            ADAPTER_NAME,
+            group["name"],
+            np.round(position_row[:POSE_DOF], 3).tolist(),
+            np.round(position_row[POSE_DOF:], 3).tolist(),
+        )
+        return Actions.from_dict(payload)
+
+    def _build_pose_via_ee(
+        self,
+        now_ms: int,
+        group: Dict[str, Any],
+        current_joints: Optional[Sequence[float]],
+        current_gripper: Optional[Sequence[float]],
+        current_poses: Optional[Dict[str, Sequence[float]]],
+    ) -> Optional[Actions]:
+        """组 E：末端位姿经 end_effector_poses.pose 通道（joint_states 保持当前关节）。"""
+        poses = current_poses or {}
+        left = poses.get("left")
+        right = poses.get("right")
+        if left is None or right is None or len(left) != POSE_DOF or len(right) != POSE_DOF:
+            logger.warning(
+                "[%s] group=%s missing ee poses in observation, skip this round",
+                ADAPTER_NAME,
+                group["name"],
+            )
+            return None
+        offset = group["pose_offset"]
+        hold_joints = list(current_joints) if current_joints else [0.0] * ARM_DOF
+        hold_gripper = list(current_gripper) if current_gripper else [0.5, 0.8]
+
+        payload: Dict[str, Any] = {
+            "timestamp": now_ms,
+            "chunk_size": self._steps,
+            "joint_states": {
+                "names": list(JOINT_NAMES),  # 关节名路由 → 第 7 章（保持不动）
+                "position": self._hold_chunk(hold_joints, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            # names 无位姿名 → joint_states 位姿不存在，走 ee 通道（优先级兜底演示）
+            "end_effector_poses": {
+                "left": {"pose": [self._offset_pose(left, offset)]},
+                "right": {"pose": [self._offset_pose(right, offset)]},
+            },
+            "end_effector_states": {
+                "names": list(GRIPPER_NAMES),
+                "position": self._hold_chunk(hold_gripper, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            "localization": {"odom_pose": [], "map_pose": []},
+            "extensions": {},
+        }
+        logger.info(
+            "[%s] group=%s ee_left=%s ee_right=%s (via end_effector_poses channel)",
+            ADAPTER_NAME,
+            group["name"],
+            np.round(self._offset_pose(left, offset), 3).tolist(),
+            np.round(self._offset_pose(right, offset), 3).tolist(),
+        )
+        return Actions.from_dict(payload)
+
+    def _build_joints8_groups(
+        self,
+        now_ms: int,
+        group: Dict[str, Any],
+        current_gripper: Optional[Sequence[float]],
+    ) -> Actions:
+        """组 F：第 8 章关节控制经部位组名路由（names=left_arm/right_arm，每组 7 关节）。"""
+        joints = np.asarray(group["joints"], dtype=float)
+        position_row = joints[:7].tolist() + joints[7:14].tolist()
+        hold_gripper = list(current_gripper) if current_gripper else list(group["gripper"])
+
+        payload: Dict[str, Any] = {
+            "timestamp": now_ms,
+            "chunk_size": self._steps,
+            "joint_states": {
+                "names": ["left_arm", "right_arm"],  # 组名路由 → 第 8 章关节控制
+                "position": self._hold_chunk(position_row, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            "end_effector_poses": {},
+            "end_effector_states": {
+                "names": list(GRIPPER_NAMES),
+                "position": self._hold_chunk(hold_gripper, self._steps),
+                "velocity": [],
+                "torque": [],
+            },
+            "localization": {"odom_pose": [], "map_pose": []},
+            "extensions": {},
+        }
+        logger.info(
+            "[%s] group=%s left_arm=%s right_arm=%s (via set_joint_position_control)",
+            ADAPTER_NAME,
+            group["name"],
+            np.round(joints[:7], 3).tolist(),
+            np.round(joints[7:], 3).tolist(),
+        )
+        return Actions.from_dict(payload)
+
 
 def parse_args() -> argparse.Namespace:
     parser = build_parser(
-        description="AgiBot G01 cloud adapter demo: cycle between 3 action groups (chapter-7 joints only)",
+        description="AgiBot G01 cloud adapter demo: cycle between action groups (ch7/ch8 routing)",
         default_project_id=DEFAULT_PROJECT_ID,
         default_device_id=DEFAULT_DEVICE_ID,
         default_client_id=DEFAULT_CLIENT_ID,
@@ -267,13 +501,24 @@ def parse_args() -> argparse.Namespace:
         "--steps",
         type=int,
         default=INTERP_STEPS,
-        help="Interpolation steps per group (chunk size)",
+        help="Interpolation steps per group (chunk size, default 2 x publish_hz)",
+    )
+    parser.add_argument(
+        "--include-ch8",
+        action="store_true",
+        help="Include chapter-8 demo groups (ee pose via names/ee-channel, group joints)",
+    )
+    parser.add_argument(
+        "--pose-offset-z",
+        type=float,
+        default=0.05,
+        help="Z offset (m) applied to current ee poses in chapter-8 pose groups",
     )
     return parser.parse_args()
 
 
 def _extract_current(observation: Any) -> Dict[str, Any]:
-    """从观测中提取当前关节/夹爪，缺失时返回 None。"""
+    """从观测中提取当前关节/夹爪/末端位姿，缺失时返回 None/空。"""
     try:
         joints = list(observation.joint_states.position) or None
     except Exception:
@@ -282,12 +527,30 @@ def _extract_current(observation: Any) -> Dict[str, Any]:
         gripper = list(observation.end_effector_states.position) or None
     except Exception:
         gripper = None
-    return {"joints": joints, "gripper": gripper}
+    poses: Dict[str, List[float]] = {}
+    try:
+        names = list(observation.end_effector_poses.names)
+        values = list(observation.end_effector_poses.pose)
+        for name, pose in zip(names, values):
+            poses[str(name)] = [float(v) for v in pose]
+    except Exception:
+        poses = {}
+    return {"joints": joints, "gripper": gripper, "poses": poses}
 
 
 def main() -> None:
     args = parse_args()
-    cycler = ThreeGroupActionCycler(steps=args.steps)
+    if args.include_ch8:
+        # 0→1→2→1 → 3→4→5→4 → ...（第 7/8 章示例一起往复）
+        sequence = CH8_CYCLE_SEQUENCE
+    else:
+        sequence = CYCLE_SEQUENCE
+    cycler = ThreeGroupActionCycler(
+        steps=args.steps,
+        sequence=sequence,
+        include_ch8=args.include_ch8,
+        pose_offset_z=args.pose_offset_z,
+    )
 
     config = ClientConfig(
         project_id=args.project_id,
@@ -317,7 +580,10 @@ def main() -> None:
             now_ms=int(time.time() * 1000),
             current_joints=current["joints"],
             current_gripper=current["gripper"],
+            current_poses=current["poses"],
         )
+        if action is None:
+            return  # 第 8 章位姿组缺观测位姿时跳过本轮
         client.publish_actions(action)
 
     client.subscribe_observations(on_observation, target_device_id=args.device_id)
