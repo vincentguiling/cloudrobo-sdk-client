@@ -123,11 +123,13 @@ GROUP_B = {
         -1.5153056383132935,
         0.16874149441719055,
     ],
+    # "head": [0, 0],
+    # "waist": [0, 10],
     "gripper": [0.85, 0.35],  # 左右夹爪各自任意角度
 }
 # 组 2：全身位姿组 —— 手臂 + 头部 + 腰部一起到达新姿态（第 7 章"整体姿态"语义）
 GROUP_C = {
-    "name": "pose(全身姿态)",
+    "name": "joints(全身姿态)",
     "kind": "joints",
     "joints": [
         -1.1872631311416626,
@@ -146,8 +148,8 @@ GROUP_C = {
         0.20629389584064484,
     ],
     # 头部 [yaw(rad), pitch(rad)]，腰部 [pitch(rad), height(cm)]（《指南》7.2.1）
-    "head": [0.1, 0.1],
-    "waist": [0.1, 10.0],
+    # "head": [10, 10],
+    # "waist": [0, 20],
     "gripper": [0.5, 0.8],
 }
 
@@ -203,7 +205,8 @@ class ThreeGroupActionCycler:
             for i in range(steps)
         ]
         gripper_chunk = [
-            (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            # (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            (gripper_target).tolist()
             for i in range(steps)
         ]
 
@@ -227,9 +230,10 @@ class ThreeGroupActionCycler:
             "extensions": {},
         }
 
-        if group["kind"] == "pose":
-            # 全身姿态组：头/腰目标经 extensions 下发（《指南》7.2.1 move_head/move_waist）
+        # 全身姿态组：头/腰目标经 extensions 下发（《指南》7.2.1 move_head/move_waist）
+        if "head" in group:
             payload["extensions"]["head_joint"] = _pack_ext(group["head"])
+        if "waist" in group:
             payload["extensions"]["waist_joint"] = _pack_ext(group["waist"])
 
         logger.info(
