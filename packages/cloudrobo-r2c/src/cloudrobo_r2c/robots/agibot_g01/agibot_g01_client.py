@@ -328,6 +328,8 @@ class AgiBotG01Client:
             return dict(self._latest_images)
 
     def _start_camera_capture(self) -> None:
+        # 先同步采一轮，保证 connect() 返回后首次观测即可拿到图像
+        self._poll_camera_once()
         if self._capture_thread is not None and self._capture_thread.is_alive():
             return
         self._running = True
@@ -342,6 +344,27 @@ class AgiBotG01Client:
             self._camera_group,
             1.0 / max(self._camera_poll_interval_s, 1e-3),
         )
+
+    def _poll_camera_once(self) -> None:
+        """同步轮询一轮相机通道，刷新非空帧缓存。"""
+        with self._lock:
+            camera = self._camera
+        if camera is None:
+            return
+        for name in self._camera_group:
+            try:
+                # 真实 a2d_sdk 返回 (图像, 时间戳)（见《指南》9.5 使用示例）
+                image, _camera_ts = camera.get_latest_image(name)
+            except Exception as exc:
+                logger.debug("AgiBot G01 camera %s poll failed: %s", name, exc)
+                continue
+            if image is None:
+                continue
+            arr = np.asarray(image)
+            if arr.size == 0 or np.all(arr == 0):
+                continue  # 相机未就绪时可能返回全零占位帧
+            with self._lock:
+                self._latest_images[name] = arr
 
     def _camera_capture_loop(self) -> None:
         # 《指南》9.6：get_latest_image 第一帧为 None，跳过空帧

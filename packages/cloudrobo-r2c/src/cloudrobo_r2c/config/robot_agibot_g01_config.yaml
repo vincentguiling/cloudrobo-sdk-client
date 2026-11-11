@@ -19,6 +19,12 @@
 #
 # 安全提示：runtime.dry_run 默认 true（观测正常发布，动作只打日志不执行）；
 # 现场验证无误后再改为 false 真实执行。
+#
+# ★ 配置版本标记：config_rev: 2026-11-11-r2
+#   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）。
+#   现场核对：文件内应能搜到 "joint_names"。若与仓库最新不一致，
+#   请以仓库该文件为准，或重装包（pip install -e packages/cloudrobo-r2c）刷新
+#   安装目录内的打包副本。
 schema_version: "v2.1"
 
 runtime:
