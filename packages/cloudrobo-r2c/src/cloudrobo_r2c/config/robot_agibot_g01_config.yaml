@@ -19,7 +19,7 @@ schema_version: "v2.1"
 runtime:
   publish_hz: 30.0
   max_duration_s: 0.0
-  action_response_timeout_s: 30.0
+  action_response_timeout_s: 3.0
   dry_run: true
   heartbeat:
     enabled: true
@@ -27,6 +27,7 @@ runtime:
     jitter_ms: 500
   keyboard_control:
     enabled: false
+  skip_initial_observations: 1
 
 hardware:
   type: "agibot_g01"
@@ -45,7 +46,7 @@ hardware:
     # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
     # camera_poll_interval_s: 0.03
     # 适配器级干运行：只打印动作不执行（与 runtime.dry_run 任一开启即生效）
-    # dry_run: false
+    dry_run: true
     commands:
       # 复位指令（keyboard_control / 命令系统可触发；全零为示例，请按需修改）
       go_home:
