@@ -82,18 +82,32 @@ pip install "hw-cloudrobo-r2c[client]"
 `body_pose`（整体姿态）维度随整机配置变化，默认不映射，现场确认维度后可仿照
 `extensions.head_joint` 增加（`dtype: FLOAT32` + 固定 `shape`）。
 
-### 控制路由：按 joint_states.names 区分第 7 / 8 章
+### 控制路由：按 joint_states.names 逐维区分第 7 / 8 章
 
-云端动作的 `joint_states.names` 决定适配器走哪章控制（YAML 已内置 `joint_names` 映射）：
+云端动作的 `joint_states.names` 逐维决定适配器行为（YAML 已内置 `joint_names` +
+全量 `position` 映射），names 与 position 一一对应：
 
-| names 内容 | 章节 | GDK 调用 | position 解析 |
+| names 逐维内容 | 章节 | GDK 调用 | 说明 |
 |---|---|---|---|
-| 双臂关节名（`left_arm_joint_1..7` 等）或缺省 | 7 章 | `move_arm` | 14 个关节角 |
-| 含 `left_pose` / `right_pose` | 8 章 | `set_end_effector_pose_control` | 每个位姿名占 7 维 `[x,y,z,qx,qy,qz,qw]` |
-| 均为部位组名（`left_arm` / `right_arm` 等） | 8 章 | `set_joint_position_control` | 每组 7 关节 |
+| `left_arm_joint_1..7` / `right_arm_joint_1..7`（或缺省） | 7 章 | `move_arm` | 关节角按名回填，缺省沿用上一帧值 |
+| `left_pose_x/y/z` + `left_pose_rx/ry/rz/rw`（四元数） | 8 章 | `set_end_effector_pose_control` | 重组为 7 维位姿 |
+| `left_pose_x/y/z` + `left_pose_roll/pitch/yaw`（欧拉角，ZYX） | 8 章 | 同上 | 内部转换为四元数 |
+| `left_gripper` / `right_gripper` | 7 章 | `move_gripper` | 两侧都给才下发（优先于 `gripper_cmd_pos` 通道） |
+| 全部为部位组名（`left_arm` / `right_arm` 等，每组 7 关节） | 8 章 | `set_joint_position_control` | 组名路由 |
 
-末端位姿双通道：可在 `joint_states`（names 用 `left_pose`/`right_pose`）或
-`end_effector_poses.pose` 下发；**两条通道同时存在时 joint_states 的位姿优先**。
+多种 names 可混合出现在同一动作中（如 位姿分量 + 夹爪分量 同时下发）。
+
+### 观测镜像：位姿与夹爪复制进 joint_states
+
+`device_to_r2c` 会把末端位姿与夹爪复制一份进 `joint_states`（YAML 已内置）：
+
+- 14 双臂关节角 + 末端位姿逐维镜像（四元数 `left_pose_x..rw` 共 14 维，或经
+  `hardware.config.ee_pose_repr: "euler"` 切换为 `left_pose_x/y/z/roll/pitch/yaw`
+  共 12 维，由四元数转换）+ 夹爪 `left_gripper` / `right_gripper` 2 维
+- 即 `joint_states.position` 维度 = 14 + 14 + 2 = 30（quat 默认）或 14 + 12 + 2 = 28
+  （euler），**云端模型输入维度需按此配置**
+- 同时 `end_effector_poses.pose` 与 `end_effector_states.position` 仍照常各发送一份；
+  位姿不可用（运控器禁用/未就绪）时仅省略位姿段
 
 ### 样例 cloud-adapter：3 组动作往复
 
@@ -107,13 +121,16 @@ pip install "hw-cloudrobo-r2c[client]"
 - 连接约定（client config）：云端适配器 `endpoint_role: "connect"` 连接 Zenoh 路由
   `tcp/127.0.0.1:7447`（mode peer）；`project_id` / `device_id` 按现场部署填写
   （示例默认 `r2c` / `local`），与机器人端取值一致
-- 第 8 章位姿：云端把 names 置为 `["left_pose", "right_pose"]`（position 两个 7 维位姿）
-  或经 `end_effector_poses.pose` 下发即可触发位姿控制（样例默认不发送，真机安全）
+- 第 8 章示例组（`--include-ch8`）：组 3 位姿+夹爪经 joint_states 逐维 names、
+  组 4 位姿经 `end_effector_poses` 通道、组 5 组名关节（详见模块 docstring）；
+  默认循环不含这些组（真机安全）
 
 ```bash
 # 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
 python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local \
     --steps 60 --duration 60
+# 第 8 章示例组（位姿目标 = 观测当前末端位姿 + z 偏移）
+python examples/agibot_g01_cloud_adapter.py --include-ch8 --pose-offset-z 0.05
 ```
 
 ## 6. 启动与验证

@@ -60,6 +60,9 @@ hardware:
     # enable_motion_controller: true
     # control_lifetime_s: 1.0         # 第 8 章位姿/关节指令有效时间（秒）
     # pose_control_group: ["left_arm", "right_arm"]
+    # ee_pose_repr: "quat"            # joint_states 位姿镜像的角度表示：
+    #                                 #   quat（left_pose_x/y/z/rx/ry/rz/rw）
+    #                                 #   euler（left_pose_x/y/z/roll/pitch/yaw，ZYX）
     # 适配器级干运行：只打印动作不执行（与 runtime.dry_run 任一开启即生效）
     dry_run: true
     commands:
@@ -106,6 +109,19 @@ device_to_r2c:
 
     - target_key: "joint_states.position"
       source_path: "ee_poses_flat"
+      list_mode: extend
+      required: false
+
+    # --- 末端夹爪镜像进 joint_states（left_gripper/right_gripper 常驻追加；
+    #     position 维度再 +2） ---
+    - target_key: "joint_states.names"
+      default: ["left_gripper", "right_gripper"]
+      list_mode: extend
+      required: false
+
+    - target_key: "joint_states.position"
+      source: "gripper_positions"
+      transforms: array_to_list
       list_mode: extend
       required: false
 
@@ -177,22 +193,23 @@ device_to_r2c:
 
 r2c_to_device:
   mappings:
-    # joint_states.names → 路由依据：适配器按 names 区分第 7 章（关节名）与
-    # 第 8 章（left_pose/right_pose 位姿名、left_arm/right_arm 部位组名）控制
+    # joint_states.names → 路由依据：适配器逐维解析 names 区分第 7/8 章控制：
+    # left_arm_joint_N/right_arm_joint_N → 第 7 章 move_arm（按名回填）；
+    # left_pose_x/y/z + rx/ry/rz/rw（四元数）或 roll/pitch/yaw（欧拉角，ZYX）
+    # → 第 8 章末端位姿；left_gripper/right_gripper → move_gripper；
+    # 全部为部位组名（left_arm/right_arm 等，每组 7 关节）→ 第 8 章关节控制
     - target: "joint_names"
       source: "joint_states.names"
       use_assign_dotted: false
       required: false
 
-    # --- 双臂控制（joint_states.position 前 14 维：关节或位姿，按 names 路由解释） ---
+    # --- 双臂/位姿主控制（joint_states.position 全量，按 names 逐维解析） ---
     - target: "arm_cmd_joint_pos"
       source: "joint_states.position"
-      slice_start: 0
-      slice_end: 14
       use_assign_dotted: false
       required: false
 
-    # --- 夹持器控制（2 通道，必选） ---
+    # --- 夹持器控制（2 通道；joint_states 内 left_gripper/right_gripper 优先） ---
     - target: "gripper_cmd_pos"
       source: "end_effector_states.position"
       slice_start: 0
