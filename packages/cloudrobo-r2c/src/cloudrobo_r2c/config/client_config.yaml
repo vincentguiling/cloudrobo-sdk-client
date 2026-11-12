@@ -6,12 +6,14 @@ device_id: "local"
 client_id: "python-client-001"
 
 # Zenoh 连接配置
-endpoints: ["tcp/127.0.0.1:7447"]  # 推荐配置 Router 地址
+# 网关/zenohd 监听所有网卡（0.0.0.0），云端适配器 connect 到其局域网 IP
+endpoints: ["tcp/0.0.0.0:7447"]
+endpoint_role: "listen"  # listen: 网关侧监听；云端适配器用 connect
 
 # 运行模式
 # peer:   支持局域网 P2P 直连优化（推荐）
 # client: 仅通过 Router 转发，适合严格防火墙限制或极低资源设备
-mode: "client"
+mode: "peer"
 
 # 协议选择 (目前仅支持 zenoh)
 protocol: "zenoh"
