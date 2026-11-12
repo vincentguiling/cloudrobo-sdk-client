@@ -1034,8 +1034,14 @@ def _load_example_module():
 
 
 def _demo_observation():
+    joint_names = (
+        [f"left_arm_joint_{i}" for i in range(1, 8)]
+        + [f"right_arm_joint_{i}" for i in range(1, 8)]
+        + ["left_gripper", "right_gripper"]
+    )
+    joint_position = [0.1] * ARM_DOF + [0.3, 0.3]
     return types.SimpleNamespace(
-        joint_states=types.SimpleNamespace(position=[0.1] * ARM_DOF),
+        joint_states=types.SimpleNamespace(names=joint_names, position=joint_position),
         end_effector_states=types.SimpleNamespace(position=[0.3, 0.3]),
     )
 
@@ -1167,12 +1173,12 @@ def test_example_ch8_pose_interp_joint_states_channel():
         pose=[[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]] * 2,
     )
     current = demo._extract_current(observation)
-    a = cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
+    a = cycler.build_action(1000, current["joints"], current["gripper"])
     assert a is not None
-    # 逐步 z 从 0.3 线性逼近 0.3（start z=0.3 → target z=0.3，此处验证 x：0.2→0.3）
+    # 绝对位姿组直接下发组内配置的目标（无插值依赖观测位姿）
     xs = [row[0] for row in a.joint_states.position]
-    assert xs == pytest.approx([0.22, 0.24, 0.26, 0.28, 0.30])
-    # 每步姿态为连续四元数（无跳变）
+    assert xs == pytest.approx([0.3] * 5)
+    # 每步姿态保持不变
     for i in range(4):
         assert abs(a.joint_states.position[i][5] - a.joint_states.position[i + 1][5]) < 0.05
     # 最后一步到达目标
