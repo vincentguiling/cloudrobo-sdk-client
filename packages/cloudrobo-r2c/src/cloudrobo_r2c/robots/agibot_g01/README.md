@@ -119,28 +119,34 @@ pip install "hw-cloudrobo-r2c[client]"
   位姿不可用（运控器禁用/未就绪）时仅省略位姿段
 - 注意：动作侧（r2c_to_device）四元数与欧拉角仍互斥——云端回传位姿指令时只能选一种表示
 
-### 样例 cloud-adapter：3 组动作往复
+### 样例 cloud-adapter：动作组往复
 
-`examples/agibot_g01_cloud_adapter.py` 演示云端在 3 组动作之间来回下发
-（真机调试采集的关节目标值，均为第 7 章关节动作）：
+`examples/agibot_g01_cloud_adapter.py` 演示云端在 `GROUPS` dict 数组定义的动作组
+之间来回下发（默认三组为真机调试采集的第 7 章关节动作）：
 
-- 关节插值：从当前关节角线性插值到目标，**chunk size = 2 × publish_hz**
-  （默认 30Hz → 60 步，每组执行约 2 秒），避免单步跳变超 0.2618 rad（15°）限幅
+- **关节/位姿/夹爪全程插值**：从当前值线性插值到目标（位姿为平移线性 +
+  四元数 SLERP，欧拉角由连续四元数逐步转换，天然避免过圈），
+  **chunk size = 2 × publish_hz**（默认 30Hz → 60 步，每组执行约 2 秒），
+  避免单步跳变超 0.2618 rad（15°）限幅
 - 夹爪任意角度：三组分别 `0.15/0.15`、`0.85/0.35`、`0.5/0.8`（连续值透传）
 - 往复序列 `0 → 1 → 2 → 1 → 0 → ...`
-- 连接约定（client config）：云端适配器 `endpoint_role: "connect"` 连接 Zenoh 路由
-  `tcp/127.0.0.1:7447`（mode peer）；`project_id` / `device_id` 按现场部署填写
-  （示例默认 `r2c` / `local`），与机器人端取值一致
-- 第 8 章示例组（`--include-ch8`）：组 3 位姿+夹爪经 joint_states 逐维 names、
-  组 4 位姿经 `end_effector_poses` 通道、组 5 组名关节（详见模块 docstring）；
-  默认循环不含这些组（真机安全）
+- 连接约定（client config）：**zenohd 与网关监听 `tcp/0.0.0.0:7447`**（所有网卡；
+  网关侧 client config 用 `endpoint_role: "listen"` + `mode: "peer"`）；云端适配器
+  `endpoint_role: "connect"`，同机部署连 `tcp/0.0.0.0:7447`，跨机部署用
+  `--zenoh-endpoints tcp/<网关IP>:7447` 指向实际地址；`project_id` / `device_id`
+  按现场部署填写（示例默认 `r2c` / `local`），与机器人端取值一致
+- 第 8 章示例组（GROUP_POSE / GROUP_JOINTS8，默认注释）：取消注释并加入
+  `GROUPS` 即可演示——`GROUP_POSE` 为**绝对位姿**（组内 `left_pose` /
+  `right_pose` 直接下发，经 `--pose-channel joint_states|ee` 选择通道、
+  `--pose-repr quat|euler` 选择角度表示）；`GROUP_JOINTS8` 为逐关节名
+  （`left_arm_joint1..7`）→ `set_joint_position_control`
 
 ```bash
 # 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
 python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local \
     --steps 60 --duration 60
-# 第 8 章示例组（位姿目标 = 观测当前末端位姿 + z 偏移）
-python examples/agibot_g01_cloud_adapter.py --include-ch8 --pose-offset-z 0.05
+# 第 8 章示例组：取消 GROUP_POSE / GROUP_JOINTS8 注释并加入 GROUPS 后，
+# 可用 --pose-channel / --pose-repr 选择下发通道与角度表示
 ```
 
 ## 6. 启动与验证

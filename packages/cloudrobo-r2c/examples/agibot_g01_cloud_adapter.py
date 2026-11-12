@@ -4,11 +4,9 @@
 ``GROUPS`` dict 数组驱动（默认三组为《指南》第 7 章 ``RobotDds`` 关节空间动作，
 真机调试采集的目标值）：
 
-- **夹爪任意角度**：夹爪值连续任意（默认归一化 ``[0, 1]``，也可用 ``[35, 120]``
-  原始值），随组切换到不同开度（用最终角度，不插值）
-- **往复运动**：组序列 ``0 → 1 → 2 → 1 → 0 → ...`` 来回循环；关节部分从当前
-  关节角线性插值到目标（chunk size = 2 × publish_hz，每组执行约 2 秒），
-  避免目标跳变超过 0.2618 rad（15°）限幅
+- **夹爪任意角度 + 全程插值**：关节、位姿、夹爪均从当前值线性/球面插值到目标
+  （chunk size = 2 × publish_hz，每组执行约 2 秒），避免目标跳变超过
+  0.2618 rad（15°）限幅；欧拉角由连续 SLERP 四元数逐步转换，天然避免过圈
 
 **第 8 章示例组**——按 ``joint_states.names`` 路由，演示第 8 章新增能力
 （默认注释，取消注释并加入 ``GROUPS`` 即可启用；机器人端建议先保持
@@ -24,6 +22,8 @@
 - ``GROUP_JOINTS8`` ``ch8_joints(组名关节)``：names = ``left_arm_joint1..7`` /
   ``right_arm_joint1..7``（逐关节名，不带下划线，与第 7 章
   ``left_arm_joint_1`` 区分），position 按名对应 → ``set_joint_position_control``
+- 第 8 章示例组同样**全程插值**：位姿从观测当前末端位姿 SLERP/线性插值到目标
+  （欧拉角由连续四元数转换，避免过圈），夹爪从当前角度线性插值
 
 连接约定（client config）：zenohd 与网关监听 ``tcp/0.0.0.0:7447``（所有网卡），
 云端适配器 ``endpoint_role: connect``，同机部署连 ``tcp/0.0.0.0:7447``，跨机部署用
@@ -280,15 +280,16 @@ class ActionGroupCycler:
         now_ms: int,
         current_joints: Optional[Sequence[float]],
         current_gripper: Optional[Sequence[float]],
+        current_poses: Optional[Dict[str, Sequence[float]]] = None,
     ) -> Actions:
-        """按下一组动作构建 Actions（关节插值、夹爪任意角度）。"""
+        """按下一组动作构建 Actions（关节/位姿/夹爪全程插值）。"""
         group = self._groups[self.next_group_index()]
         kind = group.get("kind", "joints")
 
         if kind == "ch8_pose":
-            return self._build_ch8_pose(now_ms, group, current_gripper)
+            return self._build_ch8_pose(now_ms, group, current_gripper, current_poses)
         if kind == "ch8_joints":
-            return self._build_ch8_joints(now_ms, group, current_gripper)
+            return self._build_ch8_joints(now_ms, group, current_gripper, current_joints)
         return self._build_joint_action(now_ms, group, current_joints, current_gripper)
 
     # -- 第 7 章关节组（现有主链路） ----------------------------------------------
@@ -321,8 +322,7 @@ class ActionGroupCycler:
             for i in range(steps)
         ]
         gripper_chunk = [
-            # 夹爪用最终角度，不插值（真机调试结论）
-            (gripper_target).tolist()
+            (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
             for i in range(steps)
         ]
 
@@ -364,26 +364,49 @@ class ActionGroupCycler:
 
     # -- 第 8 章示例组（绝对位姿 / 逐关节名关节） ----------------------------------
 
-    def _hold_chunk(self, values: Sequence[float], steps: int) -> List[List[float]]:
-        """整块保持同一目标值（每组动作执行约 2 秒的持续指令）。"""
-        row = [float(v) for v in values]
-        return [list(row) for _ in range(steps)]
+    @staticmethod
+    def _quat_slerp(q0: Sequence[float], q1: Sequence[float], t: float) -> List[float]:
+        """四元数球面插值（SLERP，自动取最短路径），q 为 [qx, qy, qz, qw]。"""
+        dot = sum(a * b for a, b in zip(q0, q1))
+        if dot < 0:  # 取最短路径
+            q1 = [-v for v in q1]
+            dot = -dot
+        dot = min(1.0, max(-1.0, dot))
+        if dot > 0.9995:  # 近似平行：线性插值 + 归一化
+            out = [a + (b - a) * t for a, b in zip(q0, q1)]
+            norm = math.sqrt(sum(v * v for v in out)) or 1.0
+            return [v / norm for v in out]
+        theta0 = math.acos(dot)
+        sin_theta0 = math.sin(theta0)
+        s0 = math.sin((1 - t) * theta0) / sin_theta0
+        s1 = math.sin(t * theta0) / sin_theta0
+        return [s0 * a + s1 * b for a, b in zip(q0, q1)]
+
+    @staticmethod
+    def _interp_pose7d(start: Sequence[float], target: Sequence[float], t: float) -> List[float]:
+        """位姿 7 维插值：平移线性插值 + 姿态四元数 SLERP（避免欧拉角过圈）。"""
+        trans = [s + (g - s) * t for s, g in zip(start[:3], target[:3])]
+        return trans + ActionGroupCycler._quat_slerp(start[3:7], target[3:7], t)
 
     def _build_ch8_pose(
         self,
         now_ms: int,
         group: Dict[str, Any],
         current_gripper: Optional[Sequence[float]],
+        current_poses: Optional[Dict[str, Sequence[float]]],
     ) -> Actions:
-        """第 8 章绝对位姿控制示例（通道/表示由配置选择）。
+        """第 8 章绝对位姿控制示例（通道/表示由配置选择，全程插值）。
 
         - 目标位姿 = 组内配置的 ``left_pose`` / ``right_pose``（四元数
           ``[x,y,z,qx,qy,qz,qw]`` 绝对位姿）
+        - 插值：起点为观测中的当前末端位姿（``end_effector_poses``，缺失时
+          退化为目标保持）；平移线性插值 + 四元数 SLERP，**欧拉角由逐插值
+          四元数转换得出，天然连续、避免过圈**
         - ``pose_channel="joint_states"``：经 joint_states 逐维 names 下发
           （四元数 rx/ry/rz/rw 或欧拉角 roll/pitch/yaw，按 pose_repr）
         - ``pose_channel="ee"``：经 end_effector_poses.pose 通道下发
-          （该通道为四元数；欧拉角先转换为四元数）；关节与末端互斥，
-          joint_states 仅携带夹爪分量
+          （该通道为四元数）；关节与末端互斥，joint_states 仅携带夹爪分量
+        - 夹爪同样从当前角度线性插值到目标（任意角度连续值）
         """
         left_target = [float(v) for v in group["left_pose"]]
         right_target = [float(v) for v in group["right_pose"]]
@@ -392,46 +415,77 @@ class ActionGroupCycler:
                 f"{group['name']}: left_pose/right_pose 须为 {POSE_DOF} 维"
                 f"[x,y,z,qx,qy,qz,qw]，got {len(left_target)}/{len(right_target)}"
             )
-        hold_gripper = list(current_gripper) if current_gripper else [0.5, 0.8]
+        gripper_target = list(current_gripper) if current_gripper else [0.5, 0.8]
+
+        # 插值起点：观测中的当前末端位姿（缺失时退化为目标保持）
+        poses = current_poses or {}
+        start_left = poses.get("left")
+        start_right = poses.get("right")
+        if start_left is None or len(start_left) != POSE_DOF:
+            start_left = left_target
+        if start_right is None or len(start_right) != POSE_DOF:
+            start_right = right_target
+        start_gripper = list(current_gripper) if current_gripper else list(gripper_target)
+
+        steps = self._steps
+        left_chunk = [
+            self._interp_pose7d(start_left, left_target, (i + 1) / steps) for i in range(steps)
+        ]
+        right_chunk = [
+            self._interp_pose7d(start_right, right_target, (i + 1) / steps) for i in range(steps)
+        ]
+        gripper_chunk = [
+            (
+                start_gripper[0] + (gripper_target[0] - start_gripper[0]) * (i + 1) / steps,
+                start_gripper[1] + (gripper_target[1] - start_gripper[1]) * (i + 1) / steps,
+            )
+            for i in range(steps)
+        ]
 
         if self._pose_channel == "ee":
-            # ee 通道（四元数；欧拉角先转换）；关节与末端互斥 → 仅携带夹爪分量
+            # ee 通道（四元数原生）；关节与末端互斥 → joint_states 仅携带夹爪分量
             names: List[str] = ["left_gripper", "right_gripper"]
-            position_row = hold_gripper
+            position_chunk = gripper_chunk
             ee_poses = {
-                "left": {"pose": [left_target]},
-                "right": {"pose": [right_target]},
+                "left": {"pose": left_chunk},
+                "right": {"pose": right_chunk},
             }
             channel_desc = "via end_effector_poses channel"
         else:
-            # joint_states 逐维 names（四元数或欧拉角按 pose_repr）+ 夹爪逐维分量
+            # joint_states 逐维 names（四元数或欧拉角按 pose_repr，逐插值步转换）
             names = (
                 _pose_dim_names("left", self._pose_repr)
                 + _pose_dim_names("right", self._pose_repr)
                 + ["left_gripper", "right_gripper"]
             )
-            if self._pose_repr == "euler":
-                left_row = list(left_target[:3]) + list(_quat_to_euler_rpy(*left_target[3:7]))
-                right_row = list(right_target[:3]) + list(_quat_to_euler_rpy(*right_target[3:7]))
-                position_row = left_row + right_row + hold_gripper
-            else:
-                position_row = left_target + right_target + hold_gripper
+            position_chunk = []
+            for i in range(steps):
+                row: List[float] = []
+                for pose in (left_chunk[i], right_chunk[i]):
+                    row += pose[:3]
+                    if self._pose_repr == "euler":
+                        # 由连续 SLERP 四元数转换，天然避免欧拉角过圈
+                        row += list(_quat_to_euler_rpy(*pose[3:7]))
+                    else:
+                        row += pose[3:7]
+                row += gripper_chunk[i]
+                position_chunk.append(row)
             ee_poses = {}
             channel_desc = "via joint_states names"
 
         payload: Dict[str, Any] = {
             "timestamp": now_ms,
-            "chunk_size": self._steps,
+            "chunk_size": steps,
             "joint_states": {
                 "names": names,
-                "position": self._hold_chunk(position_row, self._steps),
+                "position": position_chunk,
                 "velocity": [],
                 "torque": [],
             },
             "end_effector_poses": ee_poses,
             "end_effector_states": {
                 "names": list(GRIPPER_NAMES),
-                "position": self._hold_chunk(hold_gripper, self._steps),
+                "position": gripper_chunk,
                 "velocity": [],
                 "torque": [],
             },
@@ -444,7 +498,7 @@ class ActionGroupCycler:
             group["name"],
             np.round(left_target, 3).tolist(),
             np.round(right_target, 3).tolist(),
-            hold_gripper,
+            gripper_target,
             channel_desc,
             self._pose_repr,
         )
@@ -455,27 +509,45 @@ class ActionGroupCycler:
         now_ms: int,
         group: Dict[str, Any],
         current_gripper: Optional[Sequence[float]],
+        current_joints: Optional[Sequence[float]],
     ) -> Actions:
         """第 8 章关节控制示例（names=left_arm_joint1..7/right_arm_joint1..7，
-        逐关节名与 position 一一对应 → set_joint_position_control）。"""
-        joints = np.asarray(group["joints"], dtype=float)
+        逐关节名与 position 一一对应 → set_joint_position_control）。
+        关节从当前角度线性插值到目标（避免单步跳变超限）。"""
+        target = np.asarray(group["joints"], dtype=float)
+        start_joints = np.asarray(current_joints or target, dtype=float)
+        if start_joints.shape != target.shape:
+            start_joints = target
+        gripper_target = np.asarray(group["gripper"], dtype=float)
+        start_gripper = np.asarray(current_gripper or gripper_target, dtype=float)
+        if start_gripper.shape != gripper_target.shape:
+            start_gripper = gripper_target
+
+        steps = self._steps
         names = [f"left_arm_joint{i}" for i in range(1, 8)]
         names += [f"right_arm_joint{i}" for i in range(1, 8)]
-        hold_gripper = list(current_gripper) if current_gripper else list(group["gripper"])
+        joint_chunk = [
+            (start_joints + (target - start_joints) * (i + 1) / steps).tolist()
+            for i in range(steps)
+        ]
+        gripper_chunk = [
+            (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            for i in range(steps)
+        ]
 
         payload: Dict[str, Any] = {
             "timestamp": now_ms,
             "chunk_size": self._steps,
             "joint_states": {
                 "names": names,  # 逐关节名（不带下划线）→ 第 8 章关节控制
-                "position": self._hold_chunk(joints.tolist(), self._steps),
+                "position": joint_chunk,
                 "velocity": [],
                 "torque": [],
             },
             "end_effector_poses": {},
             "end_effector_states": {
                 "names": list(GRIPPER_NAMES),
-                "position": self._hold_chunk(hold_gripper, self._steps),
+                "position": gripper_chunk,
                 "velocity": [],
                 "torque": [],
             },
@@ -483,11 +555,14 @@ class ActionGroupCycler:
             "extensions": {},
         }
         logger.info(
-            "[%s] group=%s left_arm=%s right_arm=%s (via set_joint_position_control)",
+            "[%s] group=%s left_arm=%.3f→%.3f right_arm=%.3f→%.3f (via "
+            "set_joint_position_control)",
             ADAPTER_NAME,
             group["name"],
-            np.round(joints[:7], 3).tolist(),
-            np.round(joints[7:], 3).tolist(),
+            float(start_joints[0]),
+            float(target[0]),
+            float(start_joints[7]),
+            float(target[7]),
         )
         return Actions.from_dict(payload)
 
@@ -536,7 +611,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def _extract_current(observation: Any) -> Dict[str, Any]:
-    """从观测中提取当前关节/夹爪，缺失时返回 None。"""
+    """从观测中提取当前关节/夹爪/末端位姿，缺失时返回 None/空。"""
     try:
         joints = list(observation.joint_states.position) or None
     except Exception:
@@ -545,7 +620,15 @@ def _extract_current(observation: Any) -> Dict[str, Any]:
         gripper = list(observation.end_effector_states.position) or None
     except Exception:
         gripper = None
-    return {"joints": joints, "gripper": gripper}
+    poses: Dict[str, List[float]] = {}
+    try:
+        names = list(observation.end_effector_poses.names)
+        values = list(observation.end_effector_poses.pose)
+        for name, pose in zip(names, values):
+            poses[str(name)] = [float(v) for v in pose]
+    except Exception:
+        poses = {}
+    return {"joints": joints, "gripper": gripper, "poses": poses}
 
 
 def main() -> None:
@@ -586,6 +669,7 @@ def main() -> None:
             now_ms=int(time.time() * 1000),
             current_joints=current["joints"],
             current_gripper=current["gripper"],
+            current_poses=current["poses"],
         )
         client.publish_actions(action)
 
