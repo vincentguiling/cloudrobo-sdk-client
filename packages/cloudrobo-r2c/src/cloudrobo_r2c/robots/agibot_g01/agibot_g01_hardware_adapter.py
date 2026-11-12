@@ -281,6 +281,9 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._connected = False
         self._sequence = 0
         self._last_observation: Dict[str, Any] = {}
+        # 末端位姿可用性一次性诊断标记（避免每帧刷日志）
+        self._motion_status_warned = False
+        self._motion_status_ok_logged = False
 
         if self._dry_run:
             logger.info("[AgiBotG01] DRY_RUN MODE: log actions only, no hardware calls")
@@ -447,7 +450,16 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             logger.debug("[AgiBotG01] get_motion_status unavailable: %s", exc)
             return
         if not isinstance(status, Mapping):
+            if not self._motion_status_warned:
+                self._motion_status_warned = True
+                logger.warning(
+                    "[AgiBotG01] get_motion_status 未返回数据，末端位姿观测暂缺；"
+                    "请确认机器人处于 Copilot 模式且 RobotController 正常运行"
+                )
             return
+        if not self._motion_status_ok_logged:
+            self._motion_status_ok_logged = True
+            logger.info("[AgiBotG01] 末端位姿观测已可用（get_motion_status frames）")
         frames = status.get("frames") or {}
         left = self._frame_to_pose7d(frames.get(self._LEFT_EE_FRAME))
         right = self._frame_to_pose7d(frames.get(self._RIGHT_EE_FRAME))
