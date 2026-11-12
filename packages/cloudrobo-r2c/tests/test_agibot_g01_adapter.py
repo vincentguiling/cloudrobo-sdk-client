@@ -980,7 +980,7 @@ _CH8_POSE_GROUP = {
 _CH8_JOINTS8_GROUP = {
     "name": "ch8_joints(组名关节)",
     "kind": "ch8_joints",
-    "joints": [0.1] * ARM_DOF,
+    "joints": [0.2] * ARM_DOF,
     "gripper": [0.5, 0.8],
 }
 
@@ -1042,7 +1042,7 @@ def test_example_ch8_joints_group_per_joint_names():
     assert a.joint_states.names == [f"left_arm_joint{i}" for i in range(1, 8)] + [
         f"right_arm_joint{i}" for i in range(1, 8)
     ]
-    assert a.joint_states.position[0] == pytest.approx(_CH8_JOINTS8_GROUP["joints"])
+    assert a.joint_states.position[-1] == pytest.approx(_CH8_JOINTS8_GROUP["joints"])
     assert a.end_effector_poses == {}
 
 
@@ -1076,3 +1076,48 @@ def test_example_cycler_cycles_groups_ping_pong():
     assert a4.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     a5 = next_action()
     assert a5.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+    # 夹爪全程插值：首步从当前角度开始（0.3 → 0.15 五步插值）
+    assert a1.end_effector_states.position[0] == pytest.approx([0.27, 0.27])
+
+
+def test_example_ch8_pose_interp_joint_states_channel():
+    """ch8_pose 组（joint_states 通道）：位姿全程插值（平移线性 + SLERP）。"""
+    demo = _load_example_module()
+    target_left = [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
+    group_pose = {
+        "name": "ch8_pose(绝对位姿)",
+        "kind": "ch8_pose",
+        "left_pose": target_left,
+        "right_pose": [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0],
+    }
+    cycler = demo.ActionGroupCycler(groups=[group_pose], steps=5)
+    observation = _demo_observation()
+    observation.end_effector_poses = types.SimpleNamespace(
+        names=["left", "right"],
+        pose=[[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]] * 2,
+    )
+    current = demo._extract_current(observation)
+    a = cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
+    assert a is not None
+    # 逐步 z 从 0.3 线性逼近 0.3（start z=0.3 → target z=0.3，此处验证 x：0.2→0.3）
+    xs = [row[0] for row in a.joint_states.position]
+    assert xs == pytest.approx([0.22, 0.24, 0.26, 0.28, 0.30])
+    # 每步姿态为连续四元数（无跳变）
+    for i in range(4):
+        assert abs(a.joint_states.position[i][5] - a.joint_states.position[i + 1][5]) < 0.05
+    # 最后一步到达目标
+    assert a.joint_states.position[-1][:7] == pytest.approx(target_left)
+
+
+def test_example_ch8_joints_group_interpolates():
+    """ch8_joints 组：关节与夹爪均从当前值线性插值到目标。"""
+    demo = _load_example_module()
+    cycler = demo.ActionGroupCycler(groups=[dict(_CH8_JOINTS8_GROUP)], steps=5)
+    current = demo._extract_current(_demo_observation())
+    a = cycler.build_action(1000, current["joints"], current["gripper"])
+    # 首步 0.1 → 0.2 五步插值
+    assert a.joint_states.position[0] == pytest.approx([0.12] * ARM_DOF)
+    assert a.joint_states.position[-1] == pytest.approx([0.2] * ARM_DOF)
+    # 夹爪同样插值（当前 0.3 → 目标 0.5）
+    assert a.end_effector_states.position[0] == pytest.approx([0.34, 0.4])
+    assert a.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])
