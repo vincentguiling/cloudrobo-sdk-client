@@ -345,31 +345,23 @@ def test_observation_exposes_ee_poses():
     # 合并字段 ee_poses：按 left、right 顺序
     assert obs["ee_poses"][0] == pytest.approx(obs["left_ee_pose"])
     assert obs["ee_poses"][1] == pytest.approx(obs["right_ee_pose"])
-    # 镜像进 joint_states 所需的逐维 names（四元数表示，与动作位姿路由约定一致）
-    assert obs["ee_pose_names"] == _pose_dim_names("left") + _pose_dim_names("right")
-    assert obs["ee_poses_flat"] == pytest.approx(obs["left_ee_pose"] + obs["right_ee_pose"])
-
-
-def test_observation_mirror_euler_mode():
-    # ee_pose_repr: "euler" → 镜像为 roll/pitch/yaw（由四元数转换）
+    # 镜像进 joint_states 所需的逐维 names（四元数 + 欧拉角两种表示同时携带）
+    assert obs["ee_pose_names"] == (
+        _pose_dim_names("left", "quat")
+        + _pose_dim_names("left", "euler")[3:]
+        + _pose_dim_names("right", "quat")
+        + _pose_dim_names("right", "euler")[3:]
+    )
     from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
         _quat_to_euler_rpy,
     )
 
-    adapter = _connect({"ee_pose_repr": "euler"})
-    obs = adapter.get_observation()
-    assert len(obs["ee_pose_names"]) == 12  # 左右各 6 维（x/y/z/roll/pitch/yaw）
-    assert obs["ee_pose_names"][:6] == [
-        "left_pose_x",
-        "left_pose_y",
-        "left_pose_z",
-        "left_pose_roll",
-        "left_pose_pitch",
-        "left_pose_yaw",
-    ]
-    roll, pitch, yaw = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
-    assert obs["ee_poses_flat"][3:6] == pytest.approx([roll, pitch, yaw])
-    assert obs["ee_poses_flat"][:3] == pytest.approx([0.13, 0.89, 0.85])
+    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
+    right_rpy = _quat_to_euler_rpy(0.0, -0.7071, 0.7071, 0.0)
+    assert obs["ee_poses_flat"][:7] == pytest.approx(obs["left_ee_pose"])
+    assert obs["ee_poses_flat"][7:10] == pytest.approx(left_rpy)
+    assert obs["ee_poses_flat"][10:17] == pytest.approx(obs["right_ee_pose"])
+    assert obs["ee_poses_flat"][17:20] == pytest.approx(right_rpy)
 
 
 def test_observation_ee_poses_absent_without_motion_status():
@@ -506,18 +498,40 @@ def test_robot_config_yaml_translates_observation_and_action():
     obs = adapter.get_observation()
     observation = translator.device_to_r2c(obs)
     assert isinstance(observation, Observations)
-    # joint_states：14 关节 + 末端位姿镜像（left_pose/right_pose 各 7 维） + 夹爪 2
-    assert len(observation.joint_states.position) == 2 * ARM_DOF + GRIPPER_DOF
+    # joint_states：14 关节 + 位姿镜像（quat 7 + euler 3 每侧，共 20） + 夹爪 2
+    assert len(observation.joint_states.position) == ARM_DOF + 20 + GRIPPER_DOF
     assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint_1"
     assert list(observation.joint_states.names[ARM_DOF : ARM_DOF + 7]) == _pose_dim_names("left")
-    assert list(observation.joint_states.names[ARM_DOF + 7 : 2 * ARM_DOF]) == _pose_dim_names(
+    assert list(observation.joint_states.names[ARM_DOF + 7 : ARM_DOF + 10]) == [
+        "left_pose_roll",
+        "left_pose_pitch",
+        "left_pose_yaw",
+    ]
+    assert list(observation.joint_states.names[ARM_DOF + 10 : ARM_DOF + 17]) == _pose_dim_names(
         "right"
     )
+    assert list(observation.joint_states.names[ARM_DOF + 17 : ARM_DOF + 20]) == [
+        "right_pose_roll",
+        "right_pose_pitch",
+        "right_pose_yaw",
+    ]
     assert observation.joint_states.position[ARM_DOF : ARM_DOF + 7] == pytest.approx(
         [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
     )
-    assert observation.joint_states.position[ARM_DOF + 7 : 2 * ARM_DOF] == pytest.approx(
+    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
+        _quat_to_euler_rpy,
+    )
+
+    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
+    right_rpy = _quat_to_euler_rpy(0.0, -0.7071, 0.7071, 0.0)
+    assert observation.joint_states.position[ARM_DOF + 7 : ARM_DOF + 10] == pytest.approx(
+        list(left_rpy)
+    )
+    assert observation.joint_states.position[ARM_DOF + 10 : ARM_DOF + 17] == pytest.approx(
         [0.13, -0.89, 0.85, 0.0, -0.7071, 0.7071, 0.0]
+    )
+    assert observation.joint_states.position[ARM_DOF + 17 : ARM_DOF + 20] == pytest.approx(
+        list(right_rpy)
     )
     assert list(observation.joint_states.names[-GRIPPER_DOF:]) == [
         "left_gripper",
@@ -598,9 +612,13 @@ LEFT_POSE = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
 RIGHT_POSE = [0.2, 0.0, 0.3, 0.0, 0.0, 0.0, -1.0]
 
 
-def _pose_dim_names(side: str) -> List[str]:
-    """逐维位姿 names（四元数表示）：left_pose_x/y/z/rx/ry/rz/rw。"""
-    dims = ["x", "y", "z", "rx", "ry", "rz", "rw"]
+def _pose_dim_names(side: str, pose_repr: str = "quat") -> List[str]:
+    """逐维位姿 names：四元数 x/y/z/rx/ry/rz/rw 或欧拉角姿态 x/y/z/roll/pitch/yaw。"""
+    dims = (
+        ["x", "y", "z", "rx", "ry", "rz", "rw"]
+        if pose_repr == "quat"
+        else ["x", "y", "z", "roll", "pitch", "yaw"]
+    )
     return [f"{side}_pose_{d}" for d in dims]
 
 
@@ -998,7 +1016,7 @@ def test_example_ch8_demo_groups():
 
 def test_example_ch8_pose_channel_ee_and_euler_repr():
     # --pose-channel ee --pose-repr euler：关节与末端互斥（仅夹爪分量），
-    # ee 通道位姿为四元数（欧拉角已转换），z +0.05
+    # ee 通道下发观测到的绝对位姿（默认不加偏移；该通道为四元数原生格式）
     demo = _load_example_module()
     cycler = demo.ThreeGroupActionCycler(
         steps=5,
@@ -1013,8 +1031,7 @@ def test_example_ch8_pose_channel_ee_and_euler_repr():
     assert a.joint_states.names == ["left_gripper", "right_gripper"]
     assert a.joint_states.position[0] == pytest.approx([0.3, 0.3])
     left_pose = list(a.end_effector_poses["left"].pose[0])
-    assert left_pose[:3] == pytest.approx([0.2, 0.0, 0.35])
-    assert left_pose[3:] == pytest.approx([0.0, 0.0, 0.0, 1.0])
+    assert left_pose == pytest.approx([0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0])
 
 
 def test_example_ch8_pose_group_skips_without_ee_poses():

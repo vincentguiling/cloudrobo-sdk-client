@@ -14,8 +14,8 @@
 序列 ``0→1→2→1 → 3→4 → ...``：
 
 - 组 3 ``ch8_pose(绝对位姿)``：**绝对位姿控制**——目标位姿 = 观测中的当前末端位姿
-  （``end_effector_poses``）+ z 向偏移（默认 +5cm），经 ``set_end_effector_pose_control``
-  下发。**下发通道与角度表示可通过配置选择**：
+  （``end_effector_poses``，默认原样下发；``--pose-offset-z`` 可选叠加偏移），经
+  ``set_end_effector_pose_control`` 下发。**下发通道与角度表示可通过配置选择**：
 
   - ``--pose-channel joint_states``（默认）：经 ``joint_states`` 逐维 names 下发
   - ``--pose-channel ee``：经 ``end_effector_poses.pose`` 通道下发（关节与末端
@@ -209,13 +209,14 @@ GROUP_C = {
 # 机器人端保持 dry_run: true 观察一轮。
 # ---------------------------------------------------------------------------
 
-# 组 3：第 8 章绝对位姿控制 —— 目标 = 观测当前末端位姿 + z 向偏移；
-# 下发通道（joint_states 逐维 names / end_effector_poses 通道）与角度表示
-# （四元数 / 欧拉角）由 --pose-channel / --pose-repr 配置选择
+# 组 3：第 8 章绝对位姿控制 —— 目标 = 观测当前末端位姿（默认不加偏移，
+# --pose-offset-z 可选叠加）；下发通道（joint_states 逐维 names /
+# end_effector_poses 通道）与角度表示（四元数 / 欧拉角）由
+# --pose-channel / --pose-repr 配置选择
 GROUP_POSE = {
     "name": "ch8_pose(绝对位姿)",
     "kind": "ch8_pose",
-    "pose_offset": [0.0, 0.0, 0.05],  # 末端 [x, y, z] 偏移（米），姿态保持不变
+    "pose_offset": [0.0, 0.0, 0.0],  # 可选末端 [x, y, z] 偏移（米），默认不加
 }
 
 # 组 4：第 8 章关节控制 —— names = left_arm_joint1..7 / right_arm_joint1..7
@@ -241,7 +242,7 @@ class ThreeGroupActionCycler:
         steps: int = INTERP_STEPS,
         sequence: Sequence[int] = CYCLE_SEQUENCE,
         include_ch8: bool = False,
-        pose_offset_z: float = 0.05,
+        pose_offset_z: float = 0.0,
         pose_channel: str = "joint_states",
         pose_repr: str = "quat",
     ) -> None:
@@ -520,8 +521,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pose-offset-z",
         type=float,
-        default=0.05,
-        help="Z offset (m) applied to current ee poses in chapter-8 pose groups",
+        default=0.0,
+        help="Optional Z offset (m) applied to current ee poses (default: no offset, "
+        "send the observed absolute pose as-is)",
     )
     parser.add_argument(
         "--pose-channel",

@@ -100,8 +100,9 @@ device_to_r2c:
       source: "joint_positions"
       transforms: array_to_list
 
-    # --- 末端位姿镜像进 joint_states（第 8 章位姿可用时追加；注意 position 维度
-    #     会变为 14 + 14，云端模型输入维度需按此配置） ---
+    # --- 末端位姿镜像进 joint_states（第 8 章位姿可用时追加；**同时携带四元数
+    #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示**，每侧 10 维、两侧
+    #     20 维；position 总维度 = 14 + 20 + 2 = 36，云端模型输入维度需按此配置） ---
     - target_key: "joint_states.names"
       source_path: "ee_pose_names"
       list_mode: extend
