@@ -967,106 +967,96 @@ def _demo_observation():
     return types.SimpleNamespace(
         joint_states=types.SimpleNamespace(position=[0.1] * ARM_DOF),
         end_effector_states=types.SimpleNamespace(position=[0.3, 0.3]),
-        end_effector_poses=types.SimpleNamespace(
-            names=["left", "right"],
-            pose=[[0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]] * 2,
-        ),
     )
 
 
-def test_example_ch8_demo_groups():
-    """--include-ch8：第 8 章示例组（绝对位姿 + 逐关节名组关节）。"""
+# 第 8 章示例组（与样例中注释掉的 GROUP_POSE / GROUP_JOINTS8 同构）
+_CH8_POSE_GROUP = {
+    "name": "ch8_pose(绝对位姿)",
+    "kind": "ch8_pose",
+    "left_pose": LEFT_POSE,
+    "right_pose": RIGHT_POSE,
+}
+_CH8_JOINTS8_GROUP = {
+    "name": "ch8_joints(组名关节)",
+    "kind": "ch8_joints",
+    "joints": [0.1] * ARM_DOF,
+    "gripper": [0.5, 0.8],
+}
+
+
+def test_example_ch8_pose_group_joint_states_channel():
+    """ch8_pose 组：绝对位姿经 joint_states 逐维 names（四元数）+ 夹爪。"""
     demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(
+    cycler = demo.ActionGroupCycler(
+        groups=[dict(_CH8_POSE_GROUP)],
         steps=5,
-        sequence=demo.CH8_CYCLE_SEQUENCE,
-        include_ch8=True,
-        pose_offset_z=0.05,
+        pose_channel="joint_states",
+        pose_repr="quat",
     )
     current = demo._extract_current(_demo_observation())
-    now = 1000
-
-    def next_action():
-        return cycler.build_action(now, current["joints"], current["gripper"], current["poses"])
-
-    # 前 4 步为第 7 章：0 → 1 → 2 → 1
-    for _ in range(4):
-        assert next_action() is not None
-    # 组 3：绝对位姿（joint_states 逐维 names 通道，四元数 + 夹爪保持）
-    a5 = next_action()
-    assert a5.joint_states.names == (
+    a = cycler.build_action(1000, current["joints"], current["gripper"])
+    assert a.joint_states.names == (
         demo._pose_dim_names("left")
         + demo._pose_dim_names("right")
         + ["left_gripper", "right_gripper"]
     )
-    row = a5.joint_states.position[0]
-    assert row[:7] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
-    assert row[7:14] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
+    row = a.joint_states.position[0]
+    assert row[:7] == pytest.approx(LEFT_POSE)
+    assert row[7:14] == pytest.approx(RIGHT_POSE)
     assert row[14:] == pytest.approx([0.3, 0.3])  # 夹爪保持当前角度
-    # 组 4：逐关节名关节控制（left_arm_joint1..7 / right_arm_joint1..7）
-    a6 = next_action()
-    assert a6.joint_states.names == [f"left_arm_joint{i}" for i in range(1, 8)] + [
-        f"right_arm_joint{i}" for i in range(1, 8)
-    ]
-    assert a6.joint_states.position[0] == pytest.approx(demo.GROUP_C["joints"])
-    # 往复：回到关节 A
-    a7 = next_action()
-    assert a7.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+    assert a.end_effector_poses == {}
 
 
-def test_example_ch8_pose_channel_ee_and_euler_repr():
-    # --pose-channel ee --pose-repr euler：关节与末端互斥（仅夹爪分量），
-    # ee 通道下发观测到的绝对位姿（默认不加偏移；该通道为四元数原生格式）
+def test_example_ch8_pose_group_ee_channel_and_euler_repr():
+    """ch8_pose 组：--pose-channel ee --pose-repr euler。
+
+    关节与末端互斥 → joint_states 仅携带夹爪分量；ee 通道为四元数原生格式
+    （欧拉角在云端先转换为四元数）。
+    """
     demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(
+    cycler = demo.ActionGroupCycler(
+        groups=[dict(_CH8_POSE_GROUP)],
         steps=5,
-        sequence=[3],
-        include_ch8=True,
         pose_channel="ee",
         pose_repr="euler",
     )
     current = demo._extract_current(_demo_observation())
-    a = cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
-    assert a is not None
+    a = cycler.build_action(1000, current["joints"], current["gripper"])
     assert a.joint_states.names == ["left_gripper", "right_gripper"]
     assert a.joint_states.position[0] == pytest.approx([0.3, 0.3])
     left_pose = list(a.end_effector_poses["left"].pose[0])
-    assert left_pose == pytest.approx([0.2, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0])
+    assert left_pose == pytest.approx(LEFT_POSE)
+    assert list(a.end_effector_poses["right"].pose[0]) == pytest.approx(RIGHT_POSE)
 
 
-def test_example_ch8_pose_group_skips_without_ee_poses():
+def test_example_ch8_joints_group_per_joint_names():
+    """ch8_joints 组：left_arm_joint1..7 / right_arm_joint1..7 逐关节名。"""
     demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(
-        steps=3,
-        sequence=demo.CH8_CYCLE_SEQUENCE,
-        include_ch8=True,
-        pose_offset_z=0.05,
+    cycler = demo.ActionGroupCycler(
+        groups=[dict(_CH8_JOINTS8_GROUP)],
+        steps=5,
     )
-    observation = _demo_observation()
-    observation.end_effector_poses.pose = []
-    current = demo._extract_current(observation)
-
-    def next_action():
-        return cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
-
-    for _ in range(4):
-        assert next_action() is not None
-    # 组 3（绝对位姿）缺观测位姿 → 返回 None 跳过该轮
-    assert next_action() is None
-    # 组 4（关节控制）不依赖位姿 → 正常
-    assert next_action() is not None
+    current = demo._extract_current(_demo_observation())
+    a = cycler.build_action(1000, current["joints"], current["gripper"])
+    assert a.joint_states.names == [f"left_arm_joint{i}" for i in range(1, 8)] + [
+        f"right_arm_joint{i}" for i in range(1, 8)
+    ]
+    assert a.joint_states.position[0] == pytest.approx(_CH8_JOINTS8_GROUP["joints"])
+    assert a.end_effector_poses == {}
 
 
-def test_example_cycler_cycles_three_groups():
+def test_example_cycler_cycles_groups_ping_pong():
+    """GROUPS dict 数组驱动：默认往复序列 0 → 1 → 2 → 1 → 0。"""
     demo = _load_example_module()
-    cycler = demo.ThreeGroupActionCycler(steps=5)
+    cycler = demo.ActionGroupCycler(groups=demo.GROUPS, steps=5)
     current = demo._extract_current(_demo_observation())
     now = 1000
 
     def next_action():
         return cycler.build_action(now, current["joints"], current["gripper"])
 
-    # 组 0：关节 A（当前 → 目标插值 5 步，最后一步到达目标；夹爪任意角度插值）
+    # 组 0：关节 A（当前 → 目标插值 5 步，最后一步到达目标；夹爪任意角度）
     a1 = next_action()
     assert a1.chunk_size == 5
     assert a1.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
@@ -1075,9 +1065,8 @@ def test_example_cycler_cycles_three_groups():
     a2 = next_action()
     assert a2.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     assert a2.end_effector_states.position[-1] == pytest.approx([0.85, 0.35])
-    # 组 2：真机调试后为纯关节组（目标为真机采集值，不带 head/waist extensions）
+    # 组 2：全身姿态（真机值，不带 head/waist extensions）
     a3 = next_action()
-    assert a3.chunk_size == 5
     assert a3.joint_states.position[-1] == pytest.approx(demo.GROUP_C["joints"])
     assert a3.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])
     assert "head_joint" not in a3.extensions
