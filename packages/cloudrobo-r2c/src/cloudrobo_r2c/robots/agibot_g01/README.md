@@ -111,13 +111,13 @@ pip install "hw-cloudrobo-r2c[client]"
 
 `device_to_r2c` 会把末端位姿与夹爪复制一份进 `joint_states`（YAML 已内置）：
 
-- 14 双臂关节角 + 末端位姿逐维镜像（四元数 `left_pose_x..rw` 共 14 维，或经
-  `hardware.config.ee_pose_repr: "euler"` 切换为 `left_pose_x/y/z/roll/pitch/yaw`
-  共 12 维，由四元数转换）+ 夹爪 `left_gripper` / `right_gripper` 2 维
-- 即 `joint_states.position` 维度 = 14 + 14 + 2 = 30（quat 默认）或 14 + 12 + 2 = 28
-  （euler），**云端模型输入维度需按此配置**
+- 14 双臂关节角 + 末端位姿逐维镜像（**同时携带四元数与欧拉角两种表示**：每侧
+  `left_pose_x/y/z/rx/ry/rz/rw` 7 维 + `left_pose_roll/pitch/yaw` 3 维 = 10 维，
+  欧拉角由四元数转换；两侧共 20 维）+ 夹爪 `left_gripper` / `right_gripper` 2 维
+- 即 `joint_states.position` 维度 = 14 + 20 + 2 = 36，**云端模型输入维度需按此配置**
 - 同时 `end_effector_poses.pose` 与 `end_effector_states.position` 仍照常各发送一份；
   位姿不可用（运控器禁用/未就绪）时仅省略位姿段
+- 注意：动作侧（r2c_to_device）四元数与欧拉角仍互斥——云端回传位姿指令时只能选一种表示
 
 ### 样例 cloud-adapter：3 组动作往复
 

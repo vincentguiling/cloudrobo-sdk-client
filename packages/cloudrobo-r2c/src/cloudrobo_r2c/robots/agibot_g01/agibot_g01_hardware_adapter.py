@@ -270,10 +270,6 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._pose_control_group = list(
             self._config.get("pose_control_group", ["left_arm", "right_arm"])
         )
-        # joint_states 位姿镜像的角度表示：quat（rx/ry/rz/rw）或 euler（roll/pitch/yaw）
-        self._ee_pose_repr = str(self._config.get("ee_pose_repr", "quat")).lower()
-        if self._ee_pose_repr not in ("quat", "euler"):
-            raise ValueError(f"ee_pose_repr must be 'quat' or 'euler', got {self._ee_pose_repr!r}")
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -457,21 +453,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         if ee_poses:
             observation["ee_poses"] = ee_poses
             # 供 device_to_r2c 镜像进 joint_states：逐维 names（与动作位姿路由的
-            # names 约定一致）+ 对应扁平数值；支持 quat（rx/ry/rz/rw）与
-            # euler（roll/pitch/yaw，由四元数转换）两种表示，ee_pose_repr 选择
-            dims = _POSE_DIM_EULER if self._ee_pose_repr == "euler" else _POSE_DIM_QUAT
+            # names 约定一致），**同时携带四元数（rx/ry/rz/rw）与欧拉角
+            # （roll/pitch/yaw，ZYX，由四元数转换）两种表示**，供云端按需选用
             mirror_names: List[str] = []
             mirror_values: List[float] = []
             for route_name, pose in (("left_pose", left), ("right_pose", right)):
                 if pose is None:
                     continue
-                if len(dims) == 6:  # euler：四元数 → RPY
-                    roll, pitch, yaw = _quat_to_euler_rpy(*pose[3:7])
-                    values = [pose[0], pose[1], pose[2], roll, pitch, yaw]
-                else:
-                    values = [float(v) for v in pose]
-                mirror_names += [f"{route_name}_{d}" for d in dims]
-                mirror_values += values
+                roll, pitch, yaw = _quat_to_euler_rpy(*pose[3:7])
+                mirror_names += [f"{route_name}_{d}" for d in _POSE_DIM_QUAT]
+                mirror_values += [float(v) for v in pose]
+                mirror_names += [f"{route_name}_{d}" for d in _POSE_DIM_EULER[3:]]
+                mirror_values += [roll, pitch, yaw]
             observation["ee_pose_names"] = mirror_names
             observation["ee_poses_flat"] = mirror_values
 
