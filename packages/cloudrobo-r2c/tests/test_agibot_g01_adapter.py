@@ -663,8 +663,8 @@ def test_route_gripper_via_joint_states():
     )
 
 
-def test_route_pose_priority_joint_states_over_ee():
-    # joint_states 位姿与 end_effector_poses.pose 同时存在：joint_states 优先
+def test_route_reject_pose_in_both_channels():
+    # 末端位姿同时出现在 joint_states 与 end_effector_poses → 拒绝执行
     adapter = _connect()
     adapter.send_action(
         {
@@ -674,13 +674,41 @@ def test_route_pose_priority_joint_states_over_ee():
             "right_pose_cmd_ee": [9.0, 9.0, 9.0, 0.0, 0.0, 0.0, 1.0],
         }
     )
-    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-    assert right_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": -1.0}
-    )
+    assert _last_controller().pose_calls == []
+
+
+def test_route_joints8_per_joint_names():
+    # 第 8 章关节控制：left_arm_joint1..7 / right_arm_joint1..7（不带下划线）
+    adapter = _connect()
+    left_group = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    right_group = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
+    names = [f"left_arm_joint{i}" for i in range(1, 8)]
+    names += [f"right_arm_joint{i}" for i in range(1, 8)]
+    adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": left_group + right_group})
+    controller = _last_controller()
+    lifetime, joint_group = controller.joint_calls[0]
+    assert lifetime == 1.0
+    assert joint_group["left_arm"] == pytest.approx(left_group)
+    assert joint_group["right_arm"] == pytest.approx(right_group)
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+
+
+def test_route_reject_partial_joints8():
+    # 第 8 章关节名不全（缺 joint7）→ 不硬执行
+    adapter = _connect()
+    names = [f"left_arm_joint{i}" for i in range(1, 7)]  # 缺 7
+    names += [f"right_arm_joint{i}" for i in range(1, 8)]
+    adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": [0.1] * 13})
+    assert _last_controller().joint_calls == []
+
+
+def test_route_reject_mixed_ch7_ch8_joint_names():
+    # 第 7 章（带下划线）与第 8 章（不带下划线）关节名混用 → 拒绝
+    adapter = _connect()
+    names = ["left_arm_joint_1", "left_arm_joint1"]
+    adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": [0.1, 0.2]})
+    assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+    assert _last_controller().joint_calls == []
 
 
 def test_route_pose_fallback_to_ee_channel():
@@ -754,9 +782,7 @@ def test_route_reject_mixed_quat_and_euler():
         "right_pose_pitch",
         "right_pose_yaw",
     ]
-    adapter.send_action(
-        {"joint_names": names, "arm_cmd_joint_pos": LEFT_POSE + [0.1] * 6}
-    )
+    adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": LEFT_POSE + [0.1] * 6})
     assert _last_controller().pose_calls == []
 
 
@@ -896,14 +922,10 @@ def test_translator_maps_ee_pose_and_joint_names():
     assert AgiBotG01HardwareAdapter.as_float_list(device_command["right_pose_cmd_ee"]) == (
         pytest.approx(RIGHT_POSE)
     )
-    # 端到端：joint_states 位姿优先于 ee 通道
+    # 端到端：末端位姿同时出现在 joint_states 与 end_effector_poses → 拒绝执行
     adapter = _connect()
     adapter.send_action(device_command)
-    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
-    assert left_pose == pytest.approx(
-        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
-    )
-    assert right_pose is not None
+    assert _last_controller().pose_calls == []
     assert not any(c[0] == "move_arm" for c in _last_robot().calls)
 
 
@@ -935,7 +957,7 @@ def _demo_observation():
 
 
 def test_example_ch8_demo_groups():
-    """--include-ch8：第 8 章三种示例组（names 位姿 / ee 通道 / 组名关节）。"""
+    """--include-ch8：第 8 章示例组（绝对位姿 + 逐关节名组关节）。"""
     demo = _load_example_module()
     cycler = demo.ThreeGroupActionCycler(
         steps=5,
@@ -950,13 +972,9 @@ def test_example_ch8_demo_groups():
         return cycler.build_action(now, current["joints"], current["gripper"], current["poses"])
 
     # 前 4 步为第 7 章：0 → 1 → 2 → 1
-    for _ in range(3):
-        next_action()
-    a4 = next_action()
-    assert a4.joint_states.names == [f"left_arm_joint_{i}" for i in range(1, 8)] + [
-        f"right_arm_joint_{i}" for i in range(1, 8)
-    ]
-    # 组 3：末端位姿 + 夹爪均经 joint_states 逐维 names（当前位姿 + z 偏移）
+    for _ in range(4):
+        assert next_action() is not None
+    # 组 3：绝对位姿（joint_states 逐维 names 通道，四元数 + 夹爪保持）
     a5 = next_action()
     assert a5.joint_states.names == (
         demo._pose_dim_names("left")
@@ -967,24 +985,36 @@ def test_example_ch8_demo_groups():
     assert row[:7] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
     assert row[7:14] == pytest.approx([0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0])
     assert row[14:] == pytest.approx([0.3, 0.3])  # 夹爪保持当前角度
-    # 组 4：ee 通道（关节与末端互斥 → joint_states 仅携带夹爪分量）
+    # 组 4：逐关节名关节控制（left_arm_joint1..7 / right_arm_joint1..7）
     a6 = next_action()
-    assert list(a6.end_effector_poses["left"].pose[0]) == pytest.approx(
-        [0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0]
-    )
-    assert a6.joint_states.names == ["left_gripper", "right_gripper"]
-    assert a6.joint_states.position[0] == pytest.approx([0.3, 0.3])
-    # 组 5：组名关节（复用 GROUP_C 真机值）
+    assert a6.joint_states.names == [f"left_arm_joint{i}" for i in range(1, 8)] + [
+        f"right_arm_joint{i}" for i in range(1, 8)
+    ]
+    assert a6.joint_states.position[0] == pytest.approx(demo.GROUP_C["joints"])
+    # 往复：回到关节 A
     a7 = next_action()
-    assert a7.joint_states.names == ["left_arm", "right_arm"]
-    assert a7.joint_states.position[0][:7] == pytest.approx(demo.GROUP_C["joints"][:7])
-    # 往复：5 → 4 → 3 → 2 ...
-    a8 = next_action()
-    assert list(a8.end_effector_poses["left"].pose[0]) == pytest.approx(
-        [0.2, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0]
+    assert a7.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+
+
+def test_example_ch8_pose_channel_ee_and_euler_repr():
+    # --pose-channel ee --pose-repr euler：关节与末端互斥（仅夹爪分量），
+    # ee 通道位姿为四元数（欧拉角已转换），z +0.05
+    demo = _load_example_module()
+    cycler = demo.ThreeGroupActionCycler(
+        steps=5,
+        sequence=[3],
+        include_ch8=True,
+        pose_channel="ee",
+        pose_repr="euler",
     )
-    a9 = next_action()
-    assert a9.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+    current = demo._extract_current(_demo_observation())
+    a = cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
+    assert a is not None
+    assert a.joint_states.names == ["left_gripper", "right_gripper"]
+    assert a.joint_states.position[0] == pytest.approx([0.3, 0.3])
+    left_pose = list(a.end_effector_poses["left"].pose[0])
+    assert left_pose[:3] == pytest.approx([0.2, 0.0, 0.35])
+    assert left_pose[3:] == pytest.approx([0.0, 0.0, 0.0, 1.0])
 
 
 def test_example_ch8_pose_group_skips_without_ee_poses():
@@ -1002,12 +1032,11 @@ def test_example_ch8_pose_group_skips_without_ee_poses():
     def next_action():
         return cycler.build_action(1000, current["joints"], current["gripper"], current["poses"])
 
-    # 走到组 3（joint_states 位姿）时缺观测位姿 → 返回 None 跳过该轮
     for _ in range(4):
         assert next_action() is not None
+    # 组 3（绝对位姿）缺观测位姿 → 返回 None 跳过该轮
     assert next_action() is None
-    # 后续组 4（ee 通道）同样缺位姿 → None；组 5 正常
-    assert next_action() is None
+    # 组 4（关节控制）不依赖位姿 → 正常
     assert next_action() is not None
 
 
