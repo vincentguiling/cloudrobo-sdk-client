@@ -79,6 +79,7 @@ device_to_r2c:
   image_encoding: "jpeg"
   mappings:
     # --- 双臂 14 关节（左 7 + 右 7，弧度） ---
+    # 注意：同一 target 的多条规则须全部声明 list_mode（累加模式豁免重复校验）
     - target_key: "joint_states.names"
       default:
         - "left_arm_joint_1"
@@ -95,10 +96,12 @@ device_to_r2c:
         - "right_arm_joint_5"
         - "right_arm_joint_6"
         - "right_arm_joint_7"
+      list_mode: extend
 
     - target_key: "joint_states.position"
       source: "joint_positions"
       transforms: array_to_list
+      list_mode: extend
 
     # --- 末端位姿镜像进 joint_states（第 8 章位姿可用时追加；**同时携带四元数
     #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示**，每侧 10 维、两侧
