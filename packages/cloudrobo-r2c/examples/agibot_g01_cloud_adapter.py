@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import re
 import struct
 import time
 from typing import Any, Dict, List, Optional, Sequence
@@ -611,24 +612,38 @@ def parse_args() -> argparse.Namespace:
 
 
 def _extract_current(observation: Any) -> Dict[str, Any]:
-    """从观测中提取当前关节/夹爪/末端位姿，缺失时返回 None/空。"""
+    """从观测中按 names 提取当前双臂 14 关节与夹爪，缺失时返回 None。
+
+    joint_states 可能携带位姿/夹爪镜像等额外分量（names 与 position 一一对应），
+    因此必须按 names 逐维提取双臂关节，不能直接取 position 数组。
+    """
     try:
-        joints = list(observation.joint_states.position) or None
+        names = [str(v) for v in observation.joint_states.names]
+        position = [float(v) for v in observation.joint_states.position]
     except Exception:
-        joints = None
-    try:
-        gripper = list(observation.end_effector_states.position) or None
-    except Exception:
-        gripper = None
-    poses: Dict[str, List[float]] = {}
-    try:
-        names = list(observation.end_effector_poses.names)
-        values = list(observation.end_effector_poses.pose)
-        for name, pose in zip(names, values):
-            poses[str(name)] = [float(v) for v in pose]
-    except Exception:
-        poses = {}
-    return {"joints": joints, "gripper": gripper, "poses": poses}
+        return {"joints": None, "gripper": None, "poses": {}}
+
+    arm: List[Optional[float]] = [None] * ARM_DOF
+    gripper: Dict[str, float] = {}
+    for index, name in enumerate(names):
+        if index >= len(position):
+            break
+        value = position[index]
+        arm_match = re.match(r"^(left|right)_arm_joint_([1-7])$", name)
+        if arm_match is not None:
+            side, joint_no = arm_match.group(1), int(arm_match.group(2))
+            arm[(0 if side == "left" else 7) + joint_no - 1] = value
+            continue
+        if name in GRIPPER_NAMES:
+            gripper[name] = value
+
+    joints = arm if all(v is not None for v in arm) else None
+    left_grip = gripper.get("left_gripper")
+    right_grip = gripper.get("right_gripper")
+    gripper_out = (
+        [left_grip, right_grip] if left_grip is not None and right_grip is not None else None
+    )
+    return {"joints": joints, "gripper": gripper_out}
 
 
 def main() -> None:
