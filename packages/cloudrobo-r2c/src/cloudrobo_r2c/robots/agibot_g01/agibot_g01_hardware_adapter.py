@@ -143,8 +143,10 @@ JOINT_GROUP_NAMES = frozenset(
 _POSE_DIM_QUAT = ("x", "y", "z", "rx", "ry", "rz", "rw")
 _POSE_DIM_EULER = ("x", "y", "z", "roll", "pitch", "yaw")
 _POSE_DIM_NAME_RE = re.compile(r"^(left|right)_pose_(x|y|z|rx|ry|rz|rw|roll|pitch|yaw)$")
-# 双臂关节名（left_arm_joint_1..7 / right_arm_joint_1..7）
+# 双臂关节名（left_arm_joint_1..7 / right_arm_joint_1..7，第 7 章）
 _ARM_JOINT_NAME_RE = re.compile(r"^(left|right)_arm_joint_([1-7])$")
+# 第 8 章关节名（left_arm_joint1..7 / right_arm_joint1..7，不带下划线）
+_JOINT8_NAME_RE = re.compile(r"^(left|right)_arm_joint([1-7])$")
 # 夹爪逐维 names（镜像进 joint_states；动作侧同名解析）
 GRIPPER_JOINT_NAMES = ("left_gripper", "right_gripper")
 
@@ -569,20 +571,21 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         parsed = self._parse_joint_states_entries(joint_names, position_values)
 
         # —— 互斥与完整性校验：任一不满足即拒绝执行整条动作 ——
-        reject_reason = self._validate_action_entries(
-            joint_names, parsed, command, position_values
-        )
+        reject_reason = self._validate_action_entries(joint_names, parsed, command, position_values)
         if reject_reason:
             logger.error("[AgiBotG01] action rejected: %s", reject_reason)
             return
 
         # —— 双臂/位姿主控制：按 names 解析结果路由第 7 / 8 章 ——
         if parsed["poses"]["left"] or parsed["poses"]["right"]:
-            # 第 8 章末端位姿（校验已保证各侧分量完整；ee 通道兜底补缺侧）
+            # 第 8 章末端位姿（绝对位姿控制；校验已保证各侧分量完整）
             executed += self._apply_ch8_pose(client, parsed["poses"], command)
+        elif parsed["joints8"]["left"] or parsed["joints8"]["right"]:
+            # 第 8 章关节绝对位置控制（left_arm_jointN 逐关节名，校验已保证齐全）
+            executed += self._apply_ch8_joints(client, parsed["joints8"], parsed["groups"])
         elif parsed["groups"]:
-            # 第 8 章关节绝对位置控制（纯组名动作，校验已保证每组 7 关节）
-            executed += self._apply_ch8_joints(client, parsed["groups"])
+            # 第 8 章关节绝对位置控制（遗留组名格式，校验已保证每组 7 关节）
+            executed += self._apply_ch8_joints(client, {"left": {}, "right": {}}, parsed["groups"])
         else:
             # 第 7 章关节控制（names 须 14 关节齐全；无 names 按 position 前 14 维）
             executed += self._apply_ch7_arm(client, parsed["joints"], position_values)
@@ -662,14 +665,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
 
         返回 dict：
 
-        - ``joints``:   {canonical_index: value}（第 7 章双臂关节，按名回填）
+        - ``joints``:   {canonical_index: value}（第 7 章双臂关节
+          ``left_arm_joint_N``，带下划线）
+        - ``joints8``:  {"left": {joint_no: value}, "right": {...}}（第 8 章关节
+          ``left_arm_jointN``，不带下划线）
         - ``poses``:    {"left": {dim: value}, "right": {...}}（第 8 章位姿分量）
         - ``gripper``:  {"left": value, "right": value}
-        - ``groups``:   {组名: [7 关节]}（仅当全部条目均为组名时解析）
+        - ``groups``:   {组名: [7 关节]}（仅当全部条目均为组名时解析，遗留兼容）
         - ``unknown``:  无法识别的 names
         """
         result: Dict[str, Any] = {
             "joints": {},
+            "joints8": {"left": {}, "right": {}},
             "poses": {"left": {}, "right": {}},
             "gripper": {},
             "groups": {},
@@ -700,6 +707,13 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                     continue
                 side, joint_no = arm_match.group(1), int(arm_match.group(2))
                 result["joints"][(0 if side == "left" else 7) + joint_no - 1] = value
+                continue
+            joints8_match = _JOINT8_NAME_RE.match(name)
+            if joints8_match is not None:
+                if value is None:
+                    continue
+                side, joint_no = joints8_match.group(1), int(joints8_match.group(2))
+                result["joints8"][side][joint_no] = value
                 continue
             pose_match = _POSE_DIM_NAME_RE.match(name)
             if pose_match is not None:
@@ -737,12 +751,22 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         """
         has_pose = bool(parsed["poses"]["left"] or parsed["poses"]["right"])
         has_joint = bool(parsed["joints"])
+        has_joints8 = bool(parsed["joints8"]["left"] or parsed["joints8"]["right"])
         has_groups = bool(parsed["groups"])
         has_gripper = bool(parsed["gripper"])
+        ee_pose_present = "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command
 
-        # 关节与末端位姿互斥（joint_states 内不得混用）
-        if has_pose and (has_joint or has_groups):
+        # 关节与末端位姿互斥（joint_states 内不得混用；第 8 章关节名同属关节）
+        if has_pose and (has_joint or has_joints8 or has_groups):
             return "关节与末端位姿互斥：joint_states 同时包含关节与位姿分量"
+
+        # 末端位姿双通道互斥：同时出现在 joint_states 与 end_effector_poses → 拒绝
+        if has_pose and ee_pose_present:
+            return "末端位姿同时出现在 joint_states 与 end_effector_poses，拒绝执行"
+
+        # 第 7 章与第 8 章关节名不得混用
+        if has_joint and has_joints8:
+            return "第 7 章（left_arm_joint_N）与第 8 章（left_arm_jointN）关节名混用，" "拒绝执行"
 
         # 四元数与欧拉角互斥（逐侧并跨侧一致）
         if has_pose:
@@ -780,11 +804,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             for name, segment in parsed["groups"].items():
                 if len(segment) != 7:
                     return f"部位组 {name} 关节不全（须 7 维），不硬执行"
+        # 第 8 章关节：每侧出现的关节编号须构成完整 1..7
+        if has_joints8:
+            for side in ("left", "right"):
+                nums = parsed["joints8"][side]
+                if not nums:
+                    continue
+                missing = sorted(set(range(1, 8)) - set(nums))
+                if missing:
+                    return f"第 8 章 {side}_arm_joint 关节不全，缺少编号 {missing}，不硬执行"
 
         # 夹爪两侧须同时出现
-        if has_gripper and (
-            "left" not in parsed["gripper"] or "right" not in parsed["gripper"]
-        ):
+        if has_gripper and ("left" not in parsed["gripper"] or "right" not in parsed["gripper"]):
             return "夹爪不全：left_gripper 与 right_gripper 须同时出现，不硬执行"
 
         # 未知 names 视为协议不一致
@@ -792,11 +823,9 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             return f"存在无法识别的 joint_states names: {parsed['unknown']}"
 
         # 关节与末端互斥（ee 通道）
-        ee_pose_present = "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command
         if ee_pose_present and (has_joint or has_groups):
             return (
-                "关节与末端位姿互斥：joint_states 含关节分量时不得经 "
-                "end_effector_poses 下发位姿"
+                "关节与末端位姿互斥：joint_states 含关节分量时不得经 " "end_effector_poses 下发位姿"
             )
 
         # 旧位置式兼容：无 names 时 position 须含前 14 维双臂关节
@@ -806,9 +835,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             and position_values is not None
             and len(position_values) < ARM_DOF
         ):
-            return (
-                f"双臂关节不全（无 names 时 position 前 {ARM_DOF} 维须齐全），不硬执行"
-            )
+            return f"双臂关节不全（无 names 时 position 前 {ARM_DOF} 维须齐全），不硬执行"
         return None
 
     def _apply_ch7_arm(
@@ -865,13 +892,26 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     def _apply_ch8_joints(
         self,
         client: AgiBotG01Client,
+        joints8: Dict[str, Dict[int, float]],
         groups: Dict[str, List[float]],
     ) -> List[str]:
-        """第 8 章关节绝对位置控制：names 为部位组名，每组 7 关节。"""
-        if not groups:
+        """第 8 章关节绝对位置控制（``set_joint_position_control``）。
+
+        - ``joints8``：``left_arm_jointN`` 逐关节名（按关节编号组装为组）
+        - ``groups``：遗留组名格式（每组 7 关节，直接透传）
+        """
+        joint_group: Dict[str, List[float]] = {}
+        for side, nums in joints8.items():
+            if not nums:
+                continue
+            joint_group[f"{side}_arm"] = [nums[i] for i in range(1, 8)]
+        for name, segment in groups.items():
+            if len(segment) == 7:
+                joint_group[name] = list(segment)
+        if not joint_group:
             return []
-        client.set_joint_position_control(self._control_lifetime_s, dict(groups))
-        return [f"ch8_joints({'+'.join(sorted(groups))})"]
+        client.set_joint_position_control(self._control_lifetime_s, joint_group)
+        return [f"ch8_joints({'+'.join(sorted(joint_group))})"]
 
     def _pose_from_dims(self, dims: Optional[Dict[str, float]], side: str) -> Optional[List[float]]:
         """位姿分量 dict → 7 维 ``[x, y, z, qx, qy, qz, qw]``。

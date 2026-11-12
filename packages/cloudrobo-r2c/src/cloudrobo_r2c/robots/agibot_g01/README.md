@@ -93,13 +93,16 @@ pip install "hw-cloudrobo-r2c[client]"
 | `left_pose_x/y/z` + `left_pose_rx/ry/rz/rw`（四元数） | 8 章 | `set_end_effector_pose_control` | 各侧分量须完整，内部无补帧 |
 | `left_pose_x/y/z` + `left_pose_roll/pitch/yaw`（欧拉角，ZYX） | 8 章 | 同上 | 内部转换为四元数 |
 | `left_gripper` / `right_gripper`（两侧须同时出现） | 7 章 | `move_gripper` | 优先于 `gripper_cmd_pos` 通道 |
-| 全部为部位组名（`left_arm` / `right_arm` 等，每组 7 关节） | 8 章 | `set_joint_position_control` | 组名路由 |
+| `left_arm_joint1..7` / `right_arm_joint1..7`（逐关节，不带下划线，须齐全） | 8 章 | `set_joint_position_control` | 按关节编号组装为 left_arm/right_arm 组 |
+| 全部为部位组名（`left_arm` / `right_arm` 等，每组 7 关节） | 8 章 | `set_joint_position_control` | 组名路由（遗留兼容） |
 
 **互斥与完整性规则（违反即拒绝执行整条动作，不做补帧兜底）**：
 
 - 关节与末端位姿互斥：同一动作不得同时包含关节分量与位姿分量（含经
   `end_effector_poses` 通道下发的位姿）
+- 末端位姿双通道互斥：位姿同时出现在 `joint_states` 与 `end_effector_poses` → 拒绝
 - 四元数与欧拉角互斥：同一动作内不得混用两种表示（左右侧之间也须一致）
+- 第 7 章（`left_arm_joint_N`）与第 8 章（`left_arm_jointN`）关节名不得混用
 - 不全不硬执行：关节须 14 维齐全、每组关节须 7 维、位姿各侧分量须完整、
   夹爪须两侧同时出现，否则拒绝执行
 - 未知 names 视为协议不一致，拒绝执行
