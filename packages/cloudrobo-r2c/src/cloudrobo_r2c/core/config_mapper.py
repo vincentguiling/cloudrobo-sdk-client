@@ -5,15 +5,26 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import (Any, Callable, Dict, Iterable, List, Mapping,
-                    MutableMapping, Optional, Sequence, Tuple, Union, cast)
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 import numpy as np
 
 from cloudrobo_r2c.core.interfaces import IValueTransformer
 from cloudrobo_r2c.core.internal.helpers import assign_dotted, lookup_dotted
-from cloudrobo_r2c.core.transformers import (build_transformer_registry, index_value,
-                                       normalize_index)
+from cloudrobo_r2c.core.transformers import build_transformer_registry, index_value, normalize_index
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +61,7 @@ def _validate_dotted_path(value: str, field_name: str) -> None:
     if stripped.startswith(".") or stripped.endswith("."):
         raise ValueError(f"{field_name} must not start or end with '.': {stripped!r}")
     if ".." in stripped:
-        raise ValueError(
-            f"{field_name} must not contain consecutive dots: {stripped!r}"
-        )
+        raise ValueError(f"{field_name} must not contain consecutive dots: {stripped!r}")
     for segment in stripped.split("."):
         if not _valid_key_re().match(segment):
             raise ValueError(
@@ -142,19 +151,14 @@ class ExtensionSpec:
             )
         if not isinstance(self.shape, list):
             raise ValueError(
-                "ExtensionSpec shape must be a list, "
-                f"got {type(self.shape).__name__!r}"
+                "ExtensionSpec shape must be a list, " f"got {type(self.shape).__name__!r}"
             )
         neg_one_count = 0
         for i, dim in enumerate(self.shape):
             if not isinstance(dim, int):
-                raise ValueError(
-                    f"ExtensionSpec shape[{i}] must be an int, " f"got {dim!r}"
-                )
+                raise ValueError(f"ExtensionSpec shape[{i}] must be an int, " f"got {dim!r}")
             if dim < -1:
-                raise ValueError(
-                    f"ExtensionSpec shape[{i}] must be >= -1, " f"got {dim!r}"
-                )
+                raise ValueError(f"ExtensionSpec shape[{i}] must be >= -1, " f"got {dim!r}")
             if dim == -1:
                 neg_one_count += 1
         if neg_one_count > 1:
@@ -238,12 +242,7 @@ class MapperRule:
         target = _first_non_empty(rule, keys=("target_path", "target_key", "target"))
         default = rule.get("default")
 
-        if (
-            source is None
-            and not source_paths
-            and source_value is None
-            and default is None
-        ):
+        if source is None and not source_paths and source_value is None and default is None:
             raise ValueError(
                 "Mapper rule must include source_path/source_key/source_tensor/source "
                 "or source_paths or source_value or default"
@@ -277,9 +276,7 @@ class MapperRule:
             target_index=_to_target_index_or_none(rule.get("target_index")),
             slice_start=_to_int_or_none(rule.get("slice_start")),
             slice_end=_to_int_or_none(rule.get("slice_end")),
-            transforms=_to_transform_specs_or_none(
-                _raw_transforms_value(rule)
-            ),
+            transforms=_to_transform_specs_or_none(_raw_transforms_value(rule)),
             required=bool(rule.get("required", True)),
             default=rule.get("default"),
             use_lookup_dotted=bool(rule.get("use_lookup_dotted", True)),
@@ -417,8 +414,7 @@ class ConfigDrivenMapper:
                 seen_targets[key] = i
             else:
                 logger.debug(
-                    "Duplicate target %r (rule #%d and #%d); "
-                    "later rule will overwrite earlier.",
+                    "Duplicate target %r (rule #%d and #%d); " "later rule will overwrite earlier.",
                     rule.target,
                     seen_targets[key],
                     i,
@@ -470,7 +466,9 @@ class ConfigDrivenMapper:
         return output
 
     def _map_one_rule(
-        self, output: MutableMapping[str, Any], payload: Mapping[str, Any],
+        self,
+        output: MutableMapping[str, Any],
+        payload: Mapping[str, Any],
         rule: MapperRule,
     ) -> None:
         """Resolve, transform and assign a single mapping rule into *output*.
@@ -484,9 +482,7 @@ class ConfigDrivenMapper:
             return
         self._assign_rule_target(output, rule, value)
 
-    def _resolve_map_value(
-        self, payload: Mapping[str, Any], rule: MapperRule
-    ) -> Any:
+    def _resolve_map_value(self, payload: Mapping[str, Any], rule: MapperRule) -> Any:
         """Resolve the rule's value through source/transforms/slice/extension.
 
         Returns the module-level ``_SKIP`` sentinel when the rule produces
@@ -527,9 +523,7 @@ class ConfigDrivenMapper:
                 return _SKIP
 
             value = self._apply_transforms(value, rule, payload)
-            value = _apply_slice(
-                value, start=rule.slice_start, end=rule.slice_end
-            )
+            value = _apply_slice(value, start=rule.slice_start, end=rule.slice_end)
 
         # ── extension: wrap as self-describing ExtensionValue ────
         if rule.extension is not None:
@@ -549,7 +543,9 @@ class ConfigDrivenMapper:
                     f"for target {rule.target!r}"
                 )
             _apply_list_mode(
-                output, rule, value,
+                output,
+                rule,
+                value,
             )
             return
 
@@ -612,9 +608,7 @@ class ConfigDrivenMapper:
                     incomplete["optional"].append(f"{source_desc} (None)")
         return incomplete
 
-    def _apply_transforms(
-        self, value: Any, rule: MapperRule, context: Any = None
-    ) -> Any:
+    def _apply_transforms(self, value: Any, rule: MapperRule, context: Any = None) -> Any:
         if not rule.transforms:
             return value
         if value is None:
@@ -634,9 +628,7 @@ def _apply_slice(value: Any, *, start: Optional[int], end: Optional[int]) -> Any
     if start is None and end is None:
         return value
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
-        raise ValueError(
-            "slice_start/slice_end can only be used with list/tuple values"
-        )
+        raise ValueError("slice_start/slice_end can only be used with list/tuple values")
     return list(value[start:end])
 
 
@@ -674,14 +666,16 @@ def _assign_dotted_list_index(
 def _resolve_rule_value(payload: Mapping[str, Any], rule: MapperRule) -> Any:
     if rule.source_paths:
         if rule.use_lookup_dotted:
-            return [
-                lookup_dotted(payload, dotted_key) for dotted_key in rule.source_paths
-            ]
+            return [lookup_dotted(payload, dotted_key) for dotted_key in rule.source_paths]
         return [payload[dotted_key] for dotted_key in rule.source_paths]
     if rule.source is None:
         if rule.default is None:
             raise KeyError("source")
         else:
+            # 拷贝可变默认值：default 列表可能被后续 list_mode 规则 extend/append，
+            # 直接引用会跨 publish 累积污染（names 无限增长等）。
+            if isinstance(rule.default, list):
+                return list(rule.default)
             return rule.default
 
     if rule.use_lookup_dotted:
@@ -705,23 +699,17 @@ def _resolve_rule_value(payload: Mapping[str, Any], rule: MapperRule) -> Any:
             parts = rule.source.rsplit(".", 1)
             names_path = parts[0] + ".names" if len(parts) > 1 else "names"
         names = (
-            lookup_dotted(payload, names_path)
-            if rule.use_lookup_dotted
-            else payload[names_path]
+            lookup_dotted(payload, names_path) if rule.use_lookup_dotted else payload[names_path]
         )
         # source_name_ref 支持单个 name（字符串）或一组 name（list）。
         # 当为 list 时，按顺序提取每个 name 对应的值，并组成数组返回，
         # 便于后续配合 transforms（如 list_to_ndarray）整体转换为 numpy。
         if isinstance(rule.source_name_ref, (list, tuple)):
             return [
-                _resolve_name_ref_value(
-                    value, names, names_path, ref, rule.target
-                )
+                _resolve_name_ref_value(value, names, names_path, ref, rule.target)
                 for ref in rule.source_name_ref
             ]
-        return _resolve_name_ref_value(
-            value, names, names_path, rule.source_name_ref, rule.target
-        )
+        return _resolve_name_ref_value(value, names, names_path, rule.source_name_ref, rule.target)
 
     if rule.source_index is None:
         return value
@@ -752,14 +740,10 @@ def _resolve_name_ref_value(
         IndexError: 当解析得到下标超出 ``value`` 长度时。
     """
     if name_ref not in names:
-        raise KeyError(
-            f"Name '{name_ref}' not found in {names_path}: {names}"
-        )
+        raise KeyError(f"Name '{name_ref}' not found in {names_path}: {names}")
     idx = names.index(name_ref)
     if idx >= len(value):
-        raise IndexError(
-            f"Name ref index {idx} out of bounds for array of length {len(value)}"
-        )
+        raise IndexError(f"Name ref index {idx} out of bounds for array of length {len(value)}")
     return value[idx]
 
 
@@ -805,9 +789,7 @@ def _validate_index_parts(index: Any) -> None:
     if isinstance(index, (list, tuple)):
         for item in index:
             if item is not None and item < 0:
-                raise ValueError(
-                    f"index elements must be >= 0, got {index!r}"
-                )
+                raise ValueError(f"index elements must be >= 0, got {index!r}")
         return
     if index < 0:
         raise ValueError(f"index must be >= 0, got {index!r}")
@@ -828,6 +810,7 @@ def _validate_target_index(target_index: Any) -> None:
     """
     _validate_index_parts(target_index)
 
+
 def _is_multi_dim_full_assign(target_index: Any) -> bool:
     """True when ``target_index`` is a list containing a full-select ``None``.
 
@@ -835,9 +818,7 @@ def _is_multi_dim_full_assign(target_index: Any) -> bool:
     (e.g. ``[":", N]`` → ``[None, N]``), requiring the ndarray construction
     path rather than plain list slot assignment.
     """
-    return isinstance(target_index, (list, tuple)) and any(
-        p is None for p in target_index
-    )
+    return isinstance(target_index, (list, tuple)) and any(p is None for p in target_index)
 
 
 def _build_initial_ndarray(spec: Any, value_arr: Any) -> Any:
@@ -870,9 +851,7 @@ def _grow_and_assign(target: Any, spec: Any, value_arr: Any) -> Any:
     arr = np.asarray(value_arr)
     target = np.asarray(target)
     if arr.shape[0] != target.shape[0]:
-        raise ValueError(
-            f"target 行数与 value 不一致 ({target.shape[0]} vs {arr.shape[0]})"
-        )
+        raise ValueError(f"target 行数与 value 不一致 ({target.shape[0]} vs {arr.shape[0]})")
     if target.shape[-1] < needed:
         pad = np.full(
             (target.shape[0], needed - target.shape[-1]),
@@ -942,19 +921,14 @@ def _validate_mapper_list_mode(rule: MapperRule) -> None:
         )
 
 
-
 def _validate_mapper_extension(rule: MapperRule) -> None:
     """Validate ``extension`` compatibility with other fields."""
     if rule.extension is None:
         return
     if rule.list_mode is not None:
-        raise ValueError(
-            "extension and list_mode cannot be used together"
-        )
+        raise ValueError("extension and list_mode cannot be used together")
     if rule.target_index is not None:
-        raise ValueError(
-            "extension and target_index cannot be used together"
-        )
+        raise ValueError("extension and target_index cannot be used together")
     # Extension rules must target extensions.* — otherwise the wrapped
     # ExtensionValue dict is assigned to a non-extension field and
     # _parse_extensions() will never see it.
@@ -980,17 +954,12 @@ def _validate_slice_bound(value: Optional[int], field_name: str) -> None:
         raise ValueError(f"{field_name} must be >= 0, got {value}")
 
 
-def _validate_slice_order(
-    slice_start: Optional[int], slice_end: Optional[int]
-) -> None:
+def _validate_slice_order(slice_start: Optional[int], slice_end: Optional[int]) -> None:
     """Validate that slice_end > slice_start when both are set."""
     if slice_start is None or slice_end is None:
         return
     if slice_end <= slice_start:
-        raise ValueError(
-            f"slice_end ({slice_end}) must be > slice_start "
-            f"({slice_start})"
-        )
+        raise ValueError(f"slice_end ({slice_end}) must be > slice_start " f"({slice_start})")
 
 
 def _rule_source_repr(rule: MapperRule) -> str:
@@ -1009,9 +978,7 @@ def _rule_source_repr(rule: MapperRule) -> str:
     return f"[default]→{rule.target}"
 
 
-def _first_non_empty(
-    mapping: Mapping[str, Any], *, keys: Sequence[str]
-) -> Optional[Any]:
+def _first_non_empty(mapping: Mapping[str, Any], *, keys: Sequence[str]) -> Optional[Any]:
     for key in keys:
         value = mapping.get(key)
         if value is not None and value != "":
@@ -1026,9 +993,7 @@ def _to_list_mode_or_none(value: Any) -> Optional[str]:
         raise ValueError(f"list_mode must be a string, got {type(value).__name__!r}")
     mode = value.strip().lower()
     if mode not in ("extend", "append"):
-        raise ValueError(
-            f"list_mode must be 'extend' or 'append', got {mode!r}"
-        )
+        raise ValueError(f"list_mode must be 'extend' or 'append', got {mode!r}")
     return mode
 
 
@@ -1036,6 +1001,7 @@ def _to_int_or_none(value: Any) -> Optional[int]:
     if value is None:
         return None
     return int(value)
+
 
 def _to_target_index_or_none(
     value: Any,
@@ -1081,9 +1047,7 @@ def _raw_transforms_value(rule: Mapping[str, Any]) -> Any:
     has_transform = "transform" in rule
     has_transforms = "transforms" in rule
     if has_transforms and has_transform:
-        raise ValueError(
-            "Use 'transforms' or 'transform' (singular) — not both."
-        )
+        raise ValueError("Use 'transforms' or 'transform' (singular) — not both.")
     if has_transforms:
         raw = rule["transforms"]
         if raw is None:
@@ -1124,33 +1088,27 @@ def _to_transform_specs_or_none(value: Any) -> Optional[List[TransformSpec]]:
             if stripped:
                 if ":" in stripped:
                     name, config_val = stripped.split(":", 1)
-                    results.append(
-                        TransformSpec(
-                            name=name.strip(), config=config_val.strip()
-                        )
-                    )
+                    results.append(TransformSpec(name=name.strip(), config=config_val.strip()))
                 else:
                     results.append(TransformSpec(name=stripped))
             continue
         if isinstance(item, Mapping):
             if len(item) != 1:
-                raise ValueError(
-                    "Each transform mapping must include exactly one transform name"
-                )
+                raise ValueError("Each transform mapping must include exactly one transform name")
             name = next(iter(item.keys()))
             if not isinstance(name, str) or not name.strip():
                 raise ValueError("Transform name must be a non-empty string")
             results.append(TransformSpec(name=name.strip(), config=item[name]))
             continue
-        raise ValueError(
-            "Invalid transform entry: expected string or single-key mapping"
-        )
+        raise ValueError("Invalid transform entry: expected string or single-key mapping")
 
     return results or None
 
 
 def _call_transformer(
-    transformer: ValueTransformerLike, value: Any, config: Any = None,
+    transformer: ValueTransformerLike,
+    value: Any,
+    config: Any = None,
     context: Any = None,
 ) -> Any:
     if isinstance(transformer, IValueTransformer):
@@ -1168,7 +1126,9 @@ def _call_transformer(
 
 
 def _flatten_numeric(
-    value: Any, cast_fn: Any, out: List[Any],
+    value: Any,
+    cast_fn: Any,
+    out: List[Any],
 ) -> None:
     """Recursively flatten a nested list/tuple, casting each leaf element.
 
@@ -1412,9 +1372,7 @@ def _apply_list_mode(
             target.insert(idx, value)
 
 
-def _get_existing_target(
-    output: MutableMapping[str, Any], rule: MapperRule
-) -> Any:
+def _get_existing_target(output: MutableMapping[str, Any], rule: MapperRule) -> Any:
     """Return the current target value, leaving an ndarray untouched.
 
     Unlike the old helper, this does *not* clobber a non-list target (e.g. an
@@ -1547,8 +1505,7 @@ def collect_mapping_config_errors(config: Mapping[str, Any]) -> List[str]:
         for i, raw in enumerate(raw_mappings):
             if not isinstance(raw, Mapping):
                 errors.append(
-                    f"{section_key}.mappings[{i}] must be a mapping, "
-                    f"got {type(raw).__name__}"
+                    f"{section_key}.mappings[{i}] must be a mapping, " f"got {type(raw).__name__}"
                 )
                 continue
             try:

@@ -898,6 +898,31 @@ def test_route_reject_unknown_names():
     assert not any(c[0] == "move_arm" for c in _last_robot().calls)
 
 
+def test_mapper_shared_default_list_not_accumulated():
+    """回归：default 列表 + 后续 list_mode extend 规则不得跨 publish 累积污染。
+
+    现场曾出现 joint_states.names 每次发布追加一对 gripper 名（350+ 维），
+    根因是 default 共享可变列表被 extend 规则原地修改。
+    """
+    from cloudrobo_r2c.core.config_mapper import ConfigDrivenMapper
+
+    rules = [
+        {"target_key": "names", "default": ["a", "b"]},
+        {
+            "target_key": "names",
+            "source_path": "extra",
+            "list_mode": "extend",
+            "required": False,
+        },
+    ]
+    mapper = ConfigDrivenMapper.from_rule_mappings(rules)
+    payload = {"extra": ["c"]}
+    assert mapper.map(payload)["names"] == ["a", "b", "c"]
+    # 第二次发布：names 仍为 a/b/c，不累积
+    assert mapper.map(payload)["names"] == ["a", "b", "c"]
+    assert mapper.map(payload)["names"] == ["a", "b", "c"]
+
+
 def test_route_joints8_via_group_names():
     # names 均为第 8 章部位组名（每组 7 关节）→ set_joint_position_control
     adapter = _connect()
