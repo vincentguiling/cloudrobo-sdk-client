@@ -125,9 +125,11 @@ pip install "hw-cloudrobo-r2c[client]"
   （默认 30Hz → 60 步，每组执行约 2 秒），避免单步跳变超 0.2618 rad（15°）限幅
 - 夹爪任意角度：三组分别 `0.15/0.15`、`0.85/0.35`、`0.5/0.8`（连续值透传）
 - 往复序列 `0 → 1 → 2 → 1 → 0 → ...`
-- 连接约定（client config）：云端适配器 `endpoint_role: "connect"` 连接 Zenoh 路由
-  `tcp/127.0.0.1:7447`（mode peer）；`project_id` / `device_id` 按现场部署填写
-  （示例默认 `r2c` / `local`），与机器人端取值一致
+- 连接约定（client config）：**zenohd 与网关监听 `tcp/0.0.0.0:7447`**（所有网卡；
+  网关侧 client config 用 `endpoint_role: "listen"` + `mode: "peer"`）；云端适配器
+  `endpoint_role: "connect"`，同机部署连 `tcp/0.0.0.0:7447`，跨机部署用
+  `--zenoh-endpoints tcp/<网关IP>:7447` 指向实际地址；`project_id` / `device_id`
+  按现场部署填写（示例默认 `r2c` / `local`），与机器人端取值一致
 - 第 8 章示例组（`--include-ch8`）：组 3 位姿+夹爪经 joint_states 逐维 names、
   组 4 位姿经 `end_effector_poses` 通道、组 5 组名关节（详见模块 docstring）；
   默认循环不含这些组（真机安全）
