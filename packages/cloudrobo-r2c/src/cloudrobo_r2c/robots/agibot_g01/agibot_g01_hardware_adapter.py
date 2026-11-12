@@ -270,6 +270,12 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._pose_control_group = list(
             self._config.get("pose_control_group", ["left_arm", "right_arm"])
         )
+        # 第 8 章绝对位姿/关节控制需 planning 模式；第 7 章 move_arm 为伺服跟随。
+        # 路由在第 7/8 章之间切换时自动 set_motion_control_mode（可配置关闭）。
+        self._auto_motion_control_mode = bool(self._config.get("auto_motion_control_mode", True))
+        self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
+        self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 2))  # planning
+        self._active_motion_mode: Optional[int] = None
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -838,6 +844,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         position_values: Optional[List[float]],
     ) -> List[str]:
         """第 7 章双臂关节控制（校验已保证 14 关节齐全或走旧位置式兼容）。"""
+        self._ensure_motion_mode(client, self._ch7_motion_mode)
         if joints_by_idx:
             arm = [0.0] * ARM_DOF
             for idx, value in joints_by_idx.items():
@@ -849,13 +856,34 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             return ["arm_cmd_joint_pos"]
         return []
 
+    def _ensure_motion_mode(self, client: AgiBotG01Client, mode: int) -> None:
+        """第 7/8 章路由切换时同步运动控制模式（《指南》8.1，伺服/规划）。
+
+        绝对位姿/关节指令在伺服模式下会被视为位置阶跃；仅在模式变化时下发。
+        """
+        if not self._auto_motion_control_mode:
+            return
+        if self._active_motion_mode == mode:
+            return
+        try:
+            client.set_motion_control_mode(mode)
+            self._active_motion_mode = mode
+            logger.info("[AgiBotG01] motion control mode -> %d", mode)
+        except Exception as exc:
+            # 模式切换失败不阻断指令（现场可能已处于目标模式）
+            logger.warning("[AgiBotG01] set_motion_control_mode(%d) failed: %s", mode, exc)
+
     def _apply_ch8_pose(
         self,
         client: AgiBotG01Client,
         poses_by_side: Dict[str, Dict[str, float]],
         command: Mapping[str, Any],
     ) -> List[str]:
-        """第 8 章末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。"""
+        """第 8 章末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。
+
+        下发前自动切换 planning 模式（绝对位姿指令在伺服模式下会被视为阶跃）。
+        """
+        self._ensure_motion_mode(client, self._ch8_motion_mode)
         left = self._pose_from_dims(poses_by_side.get("left"), "left")
         right = self._pose_from_dims(poses_by_side.get("right"), "right")
         # joint_states 位姿存在时优先；否则回退 end_effector_poses 通道
@@ -890,9 +918,12 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     ) -> List[str]:
         """第 8 章关节绝对位置控制（``set_joint_position_control``）。
 
+        下发前自动切换 planning 模式（绝对关节指令在伺服模式下会被视为阶跃）。
+
         - ``joints8``：``left_arm_jointN`` 逐关节名（按关节编号组装为组）
         - ``groups``：遗留组名格式（每组 7 关节，直接透传）
         """
+        self._ensure_motion_mode(client, self._ch8_motion_mode)
         joint_group: Dict[str, List[float]] = {}
         for side, nums in joints8.items():
             if not nums:

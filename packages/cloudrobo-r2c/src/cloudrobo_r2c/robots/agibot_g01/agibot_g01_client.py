@@ -287,6 +287,11 @@ class AgiBotG01Client:
         with self._lock:
             return self._require_motion_controller().get_motion_status()
 
+    def set_motion_control_mode(self, mode: int) -> None:
+        """《指南》8.1：设置运动控制模式（0=stop，1=servo，2=planning）。"""
+        with self._lock:
+            self._require_motion_controller().set_motion_control_mode(int(mode))
+
     def set_end_effector_pose(
         self,
         lifetime: float,
