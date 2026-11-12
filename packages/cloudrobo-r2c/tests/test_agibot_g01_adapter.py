@@ -117,10 +117,18 @@ class FakeRobotController:
         type(self).instances.append(self)
         self.pose_calls: List[tuple] = []
         self.joint_calls: List[tuple] = []
+        self.motion_mode_calls: List[int] = []
         self.motion_status: Any = _fake_motion_status()
 
     def get_motion_status(self):
         return self.motion_status
+
+    def set_motion_control_mode(self, mode):
+        self.motion_mode_calls.append(int(mode))
+        self.motion_status["mode"] = {
+            "value": int(mode),
+            "name": {1: "SERVO", 2: "PLANNING"}.get(int(mode), "?"),
+        }
 
     def set_end_effector_pose_control(
         self, lifetime, control_group, left_pose=None, right_pose=None
@@ -709,6 +717,43 @@ def test_route_joints8_per_joint_names():
     assert joint_group["left_arm"] == pytest.approx(left_group)
     assert joint_group["right_arm"] == pytest.approx(right_group)
     assert not any(c[0] == "move_arm" for c in _last_robot().calls)
+    # 第 8 章下发前自动切 planning 模式
+    assert controller.motion_mode_calls == [2]
+
+
+def test_motion_mode_switches_between_ch7_and_ch8():
+    # 第 7 章(servo=1) ↔ 第 8 章(planning=2) 切换时自动 set_motion_control_mode
+    adapter = _connect()
+    pose_names = _pose_dim_names("left") + _pose_dim_names("right")
+    adapter.send_action({"joint_names": pose_names, "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE})
+    controller = _last_controller()
+    assert controller.motion_mode_calls == [2]
+    # 切回第 7 章：下发 servo 模式
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
+            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "arm_cmd_joint_pos": [0.1] * ARM_DOF,
+        }
+    )
+    assert controller.motion_mode_calls == [2, 1]
+    # 同章节重复下发不再重复切换
+    adapter.send_action(
+        {
+            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
+            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "arm_cmd_joint_pos": [0.1] * ARM_DOF,
+        }
+    )
+    assert controller.motion_mode_calls == [2, 1]
+
+
+def test_motion_mode_auto_disabled():
+    # auto_motion_control_mode: false → 不自动切换模式
+    adapter = _connect({"auto_motion_control_mode": False})
+    pose_names = _pose_dim_names("left") + _pose_dim_names("right")
+    adapter.send_action({"joint_names": pose_names, "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE})
+    assert _last_controller().motion_mode_calls == []
 
 
 def test_route_reject_partial_joints8():
