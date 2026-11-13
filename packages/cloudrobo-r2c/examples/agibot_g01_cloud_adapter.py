@@ -480,7 +480,7 @@ class ActionGroupCycler:
                 f"{group['name']}: left_pose/right_pose 须为 {POSE_DOF} 维"
                 f"[x,y,z,qx,qy,qz,qw]，got {len(left_target)}/{len(right_target)}"
             )
-        gripper_target = list(current_gripper) if current_gripper else [0.5, 0.8]
+        gripper_target = list(group.get("gripper", [0.5, 0.8]))
 
         # 插值起点：观测中的当前末端位姿（缺失时退化为目标保持）
         poses = current_poses or {}
