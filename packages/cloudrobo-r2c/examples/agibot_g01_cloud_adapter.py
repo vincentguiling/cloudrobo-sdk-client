@@ -63,7 +63,7 @@ DEFAULT_DEVICE_ID = "local"
 DEFAULT_CLIENT_ID = "agibot-g01-cloud-adapter"
 # zenohd 与网关监听 tcp/0.0.0.0:7447（所有网卡）；跨机部署时用
 # --zenoh-endpoints 指向网关/zenohd 的实际局域网地址
-DEFAULT_ZENOH_ENDPOINTS = "tcp/0.0.0.0:7447"
+DEFAULT_ZENOH_ENDPOINTS = "tcp/127.0.0.1:7447"
 
 # 与机器人端 runtime.publish_hz 保持一致
 PUBLISH_HZ = 30.0
