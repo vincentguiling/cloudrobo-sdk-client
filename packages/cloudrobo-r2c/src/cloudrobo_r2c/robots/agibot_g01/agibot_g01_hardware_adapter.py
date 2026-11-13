@@ -1049,15 +1049,12 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         if isinstance(value, np.ndarray):
             return value.reshape(-1).astype(float).tolist()
         if isinstance(value, (list, tuple)):
-            result: List[float] = []
-            for v in value:
-                inner_data = getattr(v, "data", None)
-                if isinstance(inner_data, (list, tuple)):
-                    # [Pose7D(...)] 列表：提取 .data 数值
-                    result.extend(float(x) for x in inner_data)
-                else:
-                    result.append(float(v))
-            return result
+            # 列表含 .data 属性对象（如 Pose7D）时，仅取首个元素（per-step 语义）
+            if value and hasattr(value[0], "data") and isinstance(
+                getattr(value[0], "data", None), (list, tuple)
+            ):
+                return [float(x) for x in value[0].data]
+            return [float(v) for v in value]
         data = getattr(value, "data", None)
         dtype_name = getattr(value, "dtype", None)
         if data is None and isinstance(value, Mapping):
