@@ -272,8 +272,8 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         # trajectory_tracking_control 设计，不适用于 set_joint_position_control
         # 或 set_end_effector_pose_control）。不自动切换运动模式。
         self._auto_motion_control_mode = bool(self._config.get("auto_motion_control_mode", False))
-        self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
-        self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 1))  # servo
+        self._dds_motion_mode = int(self._config.get("dds_motion_mode", 1))  # servo
+        self._ctrl_motion_mode = int(self._config.get("ctrl_motion_mode", 1))  # servo
         self._active_motion_mode: Optional[int] = None
         # 关节控制接口选择：robot_dds (move_arm) 或 robot_controller
         # (set_joint_position_control)
@@ -626,17 +626,17 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         # —— 双臂/位姿主控制：按 names 解析结果路由 ——
         if parsed["poses"]["left"] or parsed["poses"]["right"]:
             # 末端位姿（绝对位姿控制；校验已保证各侧分量完整）
-            executed += self._apply_ch8_pose(client, parsed["poses"], command)
+            executed += self._apply_ee_pose(client, parsed["poses"], command)
         elif parsed["groups"]:
             # 关节绝对位置控制（遗留组名格式，校验已保证每组 7 关节）
-            executed += self._apply_ch8_joints(client, {}, parsed["groups"])
+            executed += self._apply_joint_position(client, {}, parsed["groups"])
         else:
             # 关节控制（接口由 joint_control_interface 配置决定）
             executed += self._apply_joint_control(client, parsed["joints"], position_values)
             # ee 通道兜底：仅当 joint_states 不含任何关节/位姿分量时允许
             # （关节与末端互斥），且 end_effector_poses 有位姿时走末端位姿控制
             if "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command:
-                executed += self._apply_ch8_pose(client, {"left": {}, "right": {}}, command)
+                executed += self._apply_ee_pose(client, {"left": {}, "right": {}}, command)
 
         # —— 夹爪：joint_states 内 left_gripper/right_gripper 优先，回退原通道 ——
         if parsed["gripper"].get("left") is not None or parsed["gripper"].get("right") is not None:
@@ -879,7 +879,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         - ``"robot_dds"``（默认）→ ``RobotDds.move_arm``
         - ``"robot_controller"`` → ``RobotController.set_joint_position_control``
         """
-        self._ensure_motion_mode(client, self._ch7_motion_mode)
+        self._ensure_motion_mode(client, self._dds_motion_mode)
         arm = self._resolve_arm_values(joints_by_idx, position_values)
         if arm is None:
             return []
@@ -922,7 +922,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             # 模式切换失败不阻断指令（现场可能已处于目标模式）
             logger.warning("[AgiBotG01] set_motion_control_mode(%d) failed: %s", mode, exc)
 
-    def _apply_ch8_pose(
+    def _apply_ee_pose(
         self,
         client: AgiBotG01Client,
         poses_by_side: Dict[str, Dict[str, float]],
@@ -953,9 +953,9 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             right_pose=self._pose_to_dict(right) if right else None,
         )
         sides = [side for side, pose in (("left", left), ("right", right)) if pose is not None]
-        return ["ch8_pose(" + "/".join(sides) + ")"]
+        return ["ee_pose(" + "/".join(sides) + ")"]
 
-    def _apply_ch8_joints(
+    def _apply_joint_position(
         self,
         client: AgiBotG01Client,
         joints8: Dict[str, Dict[int, float]],
@@ -977,7 +977,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         if not joint_group:
             return []
         client.set_joint_position_control(self._control_lifetime_s, joint_group)
-        return [f"ch8_joints({'+'.join(sorted(joint_group))})"]
+        return [f"joint_position({'+'.join(sorted(joint_group))})"]
 
     def _pose_from_dims(self, dims: Optional[Dict[str, float]], side: str) -> Optional[List[float]]:
         """位姿分量 dict → 7 维 ``[x, y, z, qx, qy, qz, qw]``。
