@@ -69,8 +69,8 @@ DEFAULT_ZENOH_ENDPOINTS = "tcp/0.0.0.0:7447"
 PUBLISH_HZ = 30.0
 
 # 与 config/robot_agibot_g01_config.yaml 的 joint_states.names 保持一致
-JOINT_NAMES = [f"left_arm_joint_{i}" for i in range(1, 8)] + [
-    f"right_arm_joint_{i}" for i in range(1, 8)
+JOINT_NAMES = [f"left_arm_joint{i}" for i in range(1, 8)] + [
+    f"right_arm_joint{i}" for i in range(1, 8)
 ]
 GRIPPER_NAMES = ["left_gripper", "right_gripper"]
 
@@ -282,78 +282,6 @@ GROUP_POSE_C = {
     "gripper": [0.5, 0.8],
 }
 
-# # 组 4：RobotController 关节控制 —— names = left_arm_joint1..7 / right_arm_joint1..7
-# # （逐关节名，不带下划线，与left_arm_joint1 区分），关节目标复用
-# # GROUP_C 真机值 → set_joint_position_control
-GROUP_JOINTS8_JOINT_A = {
-    "name": "ch8_joint_a",
-    "kind": "joint_position",
-    "joints": [
-        -1.125699520111084,
-        0.5228543281555176,
-        0.10490940511226654,
-        -1.283866286277771,
-        0.7302126884460449,
-        1.476741075515747,
-        -0.16992810368537903,
-        1.1257692575454712,
-        -0.522889256477356,
-        -0.10499665141105652,
-        1.2836743593215942,
-        -0.7302126884460449,
-        -1.495011329650879,
-        0.16991065442562103,
-    ],
-    "gripper": [0.15, 0.15],  # 任意角度示例：连续小数值
-}
-GROUP_JOINTS8_JOINT_B = {
-    "name": "ch8_joint_b",
-    "kind": "joint_position",
-    "joints": [
-        -1.187420129776001,
-        0.5014432072639465,
-        0.7781304121017456,
-        -1.119522213935852,
-        0.6628905534744263,
-        1.0817254781723022,
-        -0.25557270646095276,
-        1.1248793601989746,
-        -0.9522988796234131,
-        -0.04086789861321449,
-        0.5556254386901855,
-        -1.3621994256973267,
-        -1.5153056383132935,
-        0.16874149441719055,
-    ],
-    # "head": [0, 0],
-    # "waist": [0, 10],
-    "gripper": [0.85, 0.35],  # 左右夹爪各自任意角度
-}
-GROUP_JOINTS8_JOINT_C = {
-    "name": "ch8_joint_c",
-    "kind": "joint_position",
-    "joints": [
-        -1.1872631311416626,
-        0.7889842987060547,
-        1.6079477071762085,
-        -1.1197315454483032,
-        0.6622798442840576,
-        0.26489099860191345,
-        -0.2558518946170807,
-        1.1237276792526245,
-        -0.9279735684394836,
-        -0.01715334877371788,
-        0.14202554523944855,
-        -1.5966051816940308,
-        -1.3580461740493774,
-        0.20629389584064484,
-    ],
-    # 头部 [yaw(rad), pitch(rad)]，腰部 [pitch(rad), height(cm)]（《指南》7.2.1）
-    # "head": [10, 10],
-    # "waist": [0, 20],
-    "gripper": [0.5, 0.8],
-}
-
 # 参与往复循环的动作组（dict 数组）
 GROUPS: List[Dict[str, Any]] = [
     GROUP_A,
@@ -361,8 +289,6 @@ GROUPS: List[Dict[str, Any]] = [
     GROUP_C,
     GROUP_POSE_B,
     GROUP_POSE_A,
-    GROUP_JOINTS8_JOINT_B,
-    GROUP_JOINTS8_JOINT_C,
 ]
 
 
@@ -409,8 +335,6 @@ class ActionGroupCycler:
 
         if kind == "ee_pose":
             return self._build_ee_pose(now_ms, group, current_gripper, current_poses)
-        if kind == "joint_position":
-            return self._build_joint_position(now_ms, group, current_gripper, current_joints)
         return self._build_joint_action(now_ms, group, current_joints, current_gripper)
 
     # -- RobotDds 关节组（现有主链路） ----------------------------------------------
@@ -620,69 +544,6 @@ class ActionGroupCycler:
             gripper_target,
             channel_desc,
             self._pose_repr,
-        )
-        return Actions.from_dict(payload)
-
-    def _build_joint_position(
-        self,
-        now_ms: int,
-        group: Dict[str, Any],
-        current_gripper: Optional[Sequence[float]],
-        current_joints: Optional[Sequence[float]],
-    ) -> Actions:
-        """RobotController 关节控制示例（names=left_arm_joint1..7/right_arm_joint1..7，
-        逐关节名与 position 一一对应 → set_joint_position_control）。
-        关节从当前角度线性插值到目标（避免单步跳变超限）。"""
-        target = np.asarray(group["joints"], dtype=float)
-        start_joints = np.asarray(current_joints or target, dtype=float)
-        if start_joints.shape != target.shape:
-            start_joints = target
-        gripper_target = np.asarray(group["gripper"], dtype=float)
-        start_gripper = np.asarray(current_gripper or gripper_target, dtype=float)
-        if start_gripper.shape != gripper_target.shape:
-            start_gripper = gripper_target
-
-        steps = self._steps
-        names = [f"left_arm_joint{i}" for i in range(1, 8)]
-        names += [f"right_arm_joint{i}" for i in range(1, 8)]
-        joint_chunk = [
-            (start_joints + (target - start_joints) * (i + 1) / steps).tolist()
-            for i in range(steps)
-        ]
-        gripper_chunk = [
-            # 夹爪用最终角度，不插值（真机调试结论）
-            (gripper_target).tolist()
-            for i in range(steps)
-        ]
-
-        payload: Dict[str, Any] = {
-            "timestamp": now_ms,
-            "chunk_size": self._steps,
-            "joint_states": {
-                "names": names,  # 逐关节名（不带下划线）→ RobotController 关节控制
-                "position": joint_chunk,
-                "velocity": [],
-                "torque": [],
-            },
-            "end_effector_poses": {},
-            "end_effector_states": {
-                "names": list(GRIPPER_NAMES),
-                "position": gripper_chunk,
-                "velocity": [],
-                "torque": [],
-            },
-            "localization": {"odom_pose": [], "map_pose": []},
-            "extensions": {},
-        }
-        logger.info(
-            "[%s] group=%s left_arm=%.3f→%.3f right_arm=%.3f→%.3f (via "
-            "set_joint_position_control)",
-            ADAPTER_NAME,
-            group["name"],
-            float(start_joints[0]),
-            float(target[0]),
-            float(start_joints[7]),
-            float(target[7]),
         )
         return Actions.from_dict(payload)
 
