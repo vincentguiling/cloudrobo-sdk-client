@@ -34,16 +34,21 @@
 - 整体姿态查询 ``body_pose_joint_states``
 - 相机通道（头部 / 左右手腕等，``np.ndarray`` HWC）
 
-观测平铺字段（供 ``ConfigurableDeviceTranslator`` 映射到 R2C 标准格式）：
+观测平铺字段（供 ``ConfigurableDeviceTranslator`` 映射到 R2C 标准格式；
+末端位姿与夹爪的发布位置由 ``hardware.config`` 的 ``ee_pose_channel`` /
+``gripper_channel`` 单选，观测与 state/current 同一选择，不可同时发）：
 
 - ``joint_positions``       — 双臂 14 关节位置（弧度）
-- ``gripper_positions``     — 夹持器 2 通道
+- ``gripper_positions``     — 夹持器 2 通道（``gripper_channel: end_effector_states``
+  默认；``joint_states`` 模式改产 ``joint_gripper_positions`` + ``joint_gripper_names``）
 - ``hand_joint_positions``  — 灵巧手 12 关节
 - ``head_joint_positions``  — 头部 ``[yaw, pitch]``
 - ``waist_joint_positions`` — 腰部 ``[pitch, height_cm]``
 - ``left_ee_pose`` / ``right_ee_pose`` / ``ee_poses`` — 左/右末端位姿
   ``[x, y, z, qx, qy, qz, qw]``（来自RobotController ``get_motion_status().frames``，
-  映射到 ``end_effector_poses``；未就绪或运控器不可用时不产出）
+  未就绪或运控器不可用时不产出）；发布位置按 ``ee_pose_channel``：
+  ``end_effector_poses``（默认）产 ``ee_poses_data``，
+  ``joint_states`` 产 ``ee_pose_names`` / ``ee_poses_flat``（位置 + 四元数 + 欧拉角镜像）
 - ``body_pose``             — 整体姿态关节状态（原样透传，float32 数组）
 - 相机图像按 ``camera_key_map`` 映射后以 R2C 键暴露（默认
   ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist``）
@@ -284,6 +289,26 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         # move_gripper 同时接受 [0,1] 归一化与 [35,120] 原始值，动作侧无需反向转换
         gr = self._config.get("gripper_raw_range", [35.0, 120.0])
         self._gripper_raw_range = [float(gr[0]), float(gr[1])]
+        # 末端位姿/夹爪的观测发布位置（观测与 state/current 同一选择，单选
+        # 互斥，不可同时发）：
+        # - ee_pose_channel: end_effector_poses（默认，专用字段）| joint_states（镜像）
+        # - gripper_channel: end_effector_states（默认，专用字段）| joint_states（镜像）
+        self._ee_pose_channel = (
+            str(self._config.get("ee_pose_channel", "end_effector_poses")).strip().lower()
+        )
+        if self._ee_pose_channel not in ("end_effector_poses", "joint_states"):
+            raise ValueError(
+                "hardware.config.ee_pose_channel must be 'end_effector_poses' "
+                f"or 'joint_states', got {self._ee_pose_channel!r}"
+            )
+        self._gripper_channel = (
+            str(self._config.get("gripper_channel", "end_effector_states")).strip().lower()
+        )
+        if self._gripper_channel not in ("end_effector_states", "joint_states"):
+            raise ValueError(
+                "hardware.config.gripper_channel must be 'end_effector_states' "
+                f"or 'joint_states', got {self._gripper_channel!r}"
+            )
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -374,13 +399,26 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         }
 
         self._fill_state(observation, "joint_positions", client.arm_joint_states, ARM_DOF)
-        self._fill_state(
-            observation,
-            "gripper_positions",
-            client.gripper_states,
-            GRIPPER_DOF,
-            normalize_range=self._gripper_raw_range,
-        )
+        if self._gripper_channel == "end_effector_states":
+            # 夹爪发布到专用字段 end_effector_states（默认）
+            self._fill_state(
+                observation,
+                "gripper_positions",
+                client.gripper_states,
+                GRIPPER_DOF,
+                normalize_range=self._gripper_raw_range,
+            )
+            observation["ee_gripper_names"] = list(GRIPPER_JOINT_NAMES)
+        else:
+            # 夹爪镜像进 joint_states（此时 end_effector_states 不发夹爪）
+            self._fill_state(
+                observation,
+                "joint_gripper_positions",
+                client.gripper_states,
+                GRIPPER_DOF,
+                normalize_range=self._gripper_raw_range,
+            )
+            observation["joint_gripper_names"] = list(GRIPPER_JOINT_NAMES)
         # 头/腰/手经 extensions 以 FLOAT32 打包，观测数组统一使用 float32
         self._fill_state(
             observation,
@@ -421,14 +459,16 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     def get_runtime(self, tick: int = 0) -> Mapping[str, Any]:
         """Collector for the state/current publish topic (CurrentState frame).
 
-        内容与 observation 的 ``joint_states`` 一致（复用同一构造路径
-        ``_fill_state`` / ``_fill_ee_poses``，不取相机图像）：
+        内容与 observation 一致（复用同一构造路径 ``_fill_state`` /
+        ``_fill_ee_poses``，不取相机图像），末端位姿与夹爪的发布位置遵循
+        ``ee_pose_channel`` / ``gripper_channel`` 单选配置：
 
         - 双臂 14 关节（``joint_positions``）；
-        - 末端位姿镜像（``ee_pose_names`` / ``ee_poses_flat``，位置 + 角度表示
-          与 observation 相同；位姿不可用时与观测一致省略该段）；
-        - 夹爪 2 通道（``[35, 120]`` 原始量程归一化到 ``[0, 1]``，与观测
-          ``gripper_positions`` 同语义）。
+        - 末端位姿：``joint_states`` 镜像（``ee_pose_names`` / ``ee_poses_flat``，
+          位置 + 角度表示同 observation）或 ``end_effector_poses`` 段
+          （``ee_poses_data``），二选一；位姿不可用时与观测一致省略；
+        - 夹爪：``joint_states`` 镜像（``[35, 120]`` 归一化到 ``[0, 1]``，
+          与观测同语义）或 ``end_effector_states`` 段，二选一。
 
         ``location`` 取 ``hardware.config.location``（缺省空串）。供
         ``hardware.topics`` 的 ``{project_id}/{device_id}/state/current``
@@ -437,20 +477,29 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         client = self._require_client()
         source: Dict[str, Any] = {}
         self._fill_state(source, "joint_positions", client.arm_joint_states, ARM_DOF)
+        if self._gripper_channel == "end_effector_states":
+            gripper_key = "gripper_positions"
+            source["ee_gripper_names"] = list(GRIPPER_JOINT_NAMES)
+        else:
+            gripper_key = "joint_gripper_positions"
+            source["joint_gripper_names"] = list(GRIPPER_JOINT_NAMES)
         self._fill_state(
             source,
-            "gripper_positions",
+            gripper_key,
             client.gripper_states,
             GRIPPER_DOF,
             normalize_range=self._gripper_raw_range,
         )
         self._fill_ee_poses(source, client)
+
         names = [f"{side}_arm_joint{i}" for side in ("left", "right") for i in range(1, 8)]
-        names += list(source.get("ee_pose_names") or [])
-        names.extend(GRIPPER_JOINT_NAMES)
         positions = [float(v) for v in source["joint_positions"]]
-        positions += list(source.get("ee_poses_flat") or [])
-        positions += [float(v) for v in source["gripper_positions"]]
+        if self._ee_pose_channel == "joint_states":
+            names += list(source.get("ee_pose_names") or [])
+            positions += list(source.get("ee_poses_flat") or [])
+        if self._gripper_channel == "joint_states":
+            names += list(source.get("joint_gripper_names") or [])
+            positions += [float(v) for v in source[gripper_key]]
         frame: Dict[str, Any] = {
             "timestamp": int(time.time() * 1000),
             "location": str(self._config.get("location", "")),
@@ -462,6 +511,19 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 "torque": [],
             },
         }
+        if self._gripper_channel == "end_effector_states":
+            frame["end_effector_states"] = {
+                "names": list(source["ee_gripper_names"]),
+                "position": [float(v) for v in source["gripper_positions"]],
+                "force": [],
+            }
+        if self._ee_pose_channel == "end_effector_poses":
+            ee_data = source.get("ee_poses_data")
+            if ee_data:
+                frame["end_effector_poses"] = {
+                    "names": list(ee_data["names"]),
+                    "pose": [list(p) for p in ee_data["pose"]],
+                }
         return frame
 
     def _fill_state(
@@ -545,9 +607,13 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         ee_poses = [pose for pose in (left, right) if pose is not None]
         if ee_poses:
             observation["ee_poses"] = ee_poses
-            # 供 device_to_r2c 镜像进 joint_states：逐维 names（与动作位姿路由的
-            # names 约定一致），**同时携带四元数（rx/ry/rz/rw）与欧拉角
-            # （roll/pitch/yaw，ZYX，由四元数转换）两种表示**，供云端按需选用
+            # 末端位姿发布位置单选（ee_pose_channel，观测与 state/current 同一
+            # 选择）：
+            # - end_effector_poses（默认）：ee_poses_data 一次性映射到专用字段
+            #   （names + pose 整体，避免部分触发时生成不完整 dict）
+            # - joint_states：ee_pose_names/ee_poses_flat 镜像进 joint_states，
+            #   逐维 names（与动作位姿路由的 names 约定一致），**同时携带
+            #   四元数（rx/ry/rz/rw）与欧拉角（roll/pitch/yaw，ZYX）两种表示**
             mirror_names: List[str] = []
             mirror_values: List[float] = []
             for route_name, pose in (("left_pose", left), ("right_pose", right)):
@@ -558,16 +624,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 mirror_values += [float(v) for v in pose]
                 mirror_names += [f"{route_name}_{d}" for d in _POSE_DIM_EULER[3:]]
                 mirror_values += [roll, pitch, yaw]
-            observation["ee_pose_names"] = mirror_names
-            observation["ee_poses_flat"] = mirror_values
-            # 供 device_to_r2c 一次性映射到 end_effector_poses（names + pose 整体，
-            # 避免拆分多条规则导致部分触发时生成不完整 dict）
-            observation["ee_poses_data"] = {
-                "names": [
-                    name for name, pose in (("left", left), ("right", right)) if pose is not None
-                ],
-                "pose": [list(pose) for pose in ee_poses],
-            }
+            if self._ee_pose_channel == "joint_states":
+                observation["ee_pose_names"] = mirror_names
+                observation["ee_poses_flat"] = mirror_values
+            else:
+                observation["ee_poses_data"] = {
+                    "names": [
+                        name
+                        for name, pose in (("left", left), ("right", right))
+                        if pose is not None
+                    ],
+                    "pose": [list(pose) for pose in ee_poses],
+                }
             observation["ee_pose_group_names"] = [
                 name for name, pose in (("left", left), ("right", right)) if pose is not None
             ]
