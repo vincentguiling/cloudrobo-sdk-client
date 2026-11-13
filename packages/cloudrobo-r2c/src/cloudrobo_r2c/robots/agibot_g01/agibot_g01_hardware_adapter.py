@@ -48,7 +48,8 @@
   ``[x, y, z, qx, qy, qz, qw]``（来自RobotController ``get_motion_status().frames``，
   未就绪或运控器不可用时不产出）；发布位置按 ``ee_pose_channel``：
   ``end_effector_poses``（默认）产 ``ee_poses_data``，
-  ``joint_states`` 产 ``ee_pose_names`` / ``ee_poses_flat``（位置 + 四元数 + 欧拉角镜像）
+  ``joint_states`` 产 ``ee_pose_names`` / ``ee_poses_flat``（按 ``ee_pose_repr``
+  单表示：quat 7 维 / euler 6 维 ZYX，对两种通道都生效）
 - ``body_pose``             — 整体姿态关节状态（原样透传，float32 数组）
 - 相机图像按 ``camera_key_map`` 映射后以 R2C 键暴露（默认
   ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist``）
@@ -62,9 +63,11 @@
 - ``head_cmd_joint_pos``    — 头部 ``[yaw, pitch]`` 目标 → ``move_head``
 - ``waist_cmd_joint_pos``   — 腰部 ``[pitch, height_cm]`` 目标 → ``move_waist``
 - ``wheel_cmd_speed``       — 底盘 ``[linear, angular]`` → ``move_wheel``
-- ``left_pose_cmd`` / ``right_pose_cmd``        — 来自 joint_states 的 7 维末端位姿
+- ``left_pose_cmd`` / ``right_pose_cmd``        — 来自 joint_states 的末端位姿
+  （按 names 识别 quat/euler 分量，内部统一转 quat 下发）
 - ``left_pose_cmd_ee`` / ``right_pose_cmd_ee``  — 来自 ``end_effector_poses.pose`` 的
-  7 维末端位姿（joint_states 位姿存在时优先用前者）
+  末端位姿（按长度识别：7 维 quat / 6 维 euler ZYX，euler 内部转 quat 下发；
+  joint_states 位姿存在时优先用前者）
 
 动作字段支持 ``ExtensionValue``（FLOAT32/FLOAT64，形状一维），云端可将头/腰/轮
 等扩展指令放进 ``Actions.extensions``，由适配器负责解码。
@@ -309,6 +312,19 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 "hardware.config.gripper_channel must be 'end_effector_states' "
                 f"or 'joint_states', got {self._gripper_channel!r}"
             )
+        # 末端位姿角度表示（对 ee_pose_channel 的两种取值都生效，观测与
+        # state/current 同一选择）：
+        # - quat（默认）：[x, y, z, rx, ry, rz, rw] 7 维（joint_states 镜像
+        #   names 为 left_pose_x/y/z/rx/ry/rz/rw）
+        # - euler：[x, y, z, roll, pitch, yaw] 6 维（ZYX；joint_states 镜像
+        #   names 为 left_pose_x/y/z/roll/pitch/yaw；end_effector_poses.pose
+        #   每行 6 维；动作 ee 通道兼容 7 维 quat 与 6 维 euler，euler 内部转 quat）
+        self._ee_pose_repr = str(self._config.get("ee_pose_repr", "quat")).strip().lower()
+        if self._ee_pose_repr not in ("quat", "euler"):
+            raise ValueError(
+                "hardware.config.ee_pose_repr must be 'quat' or 'euler', "
+                f"got {self._ee_pose_repr!r}"
+            )
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -461,11 +477,12 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
 
         内容与 observation 一致（复用同一构造路径 ``_fill_state`` /
         ``_fill_ee_poses``，不取相机图像），末端位姿与夹爪的发布位置遵循
-        ``ee_pose_channel`` / ``gripper_channel`` 单选配置：
+        ``ee_pose_channel`` / ``gripper_channel`` 单选配置，位姿角度表示遵循
+        ``ee_pose_repr``（quat/euler，对两种通道都生效）：
 
         - 双臂 14 关节（``joint_positions``）；
         - 末端位姿：``joint_states`` 镜像（``ee_pose_names`` / ``ee_poses_flat``，
-          位置 + 角度表示同 observation）或 ``end_effector_poses`` 段
+          与 observation 同一表示）或 ``end_effector_poses`` 段
           （``ee_poses_data``），二选一；位姿不可用时与观测一致省略；
         - 夹爪：``joint_states`` 镜像（``[35, 120]`` 归一化到 ``[0, 1]``，
           与观测同语义）或 ``end_effector_states`` 段，二选一。
@@ -577,8 +594,11 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         """末端位姿观测（《指南》8.2.3 ``get_motion_status().frames``）。
 
         产出 ``left_ee_pose`` / ``right_ee_pose``（``[x, y, z, qx, qy, qz, qw]`` list）
-        与合并字段 ``ee_poses``（按 left、right 顺序的位姿列表，映射到 device_to_r2c 的
-        ``end_effector_poses.pose``）；运控状态未就绪或运控器不可用时不产出字段。
+        与合并字段 ``ee_poses``；发布位置按 ``ee_pose_channel`` 单选：
+        ``end_effector_poses``（默认）产 ``ee_poses_data``（names + pose，角度表示
+        按 ``ee_pose_repr``：quat 7 维 / euler 6 维）；``joint_states`` 产
+        ``ee_pose_names``/``ee_poses_flat`` 镜像（同 ``ee_pose_repr`` 单表示）。
+        运控状态未就绪或运控器不可用时不产出字段。
         """
         try:
             status = client.get_motion_status()
@@ -607,23 +627,31 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         ee_poses = [pose for pose in (left, right) if pose is not None]
         if ee_poses:
             observation["ee_poses"] = ee_poses
+            # 角度表示单选（ee_pose_repr，对 ee_pose_channel 两种取值都生效）：
+            # quat → [x, y, z, rx, ry, rz, rw]；euler → [x, y, z, roll, pitch, yaw]（ZYX）
+            if self._ee_pose_repr == "euler":
+                pose_dims = _POSE_DIM_EULER
+            else:
+                pose_dims = _POSE_DIM_QUAT
             # 末端位姿发布位置单选（ee_pose_channel，观测与 state/current 同一
             # 选择）：
             # - end_effector_poses（默认）：ee_poses_data 一次性映射到专用字段
             #   （names + pose 整体，避免部分触发时生成不完整 dict）
-            # - joint_states：ee_pose_names/ee_poses_flat 镜像进 joint_states，
-            #   逐维 names（与动作位姿路由的 names 约定一致），**同时携带
-            #   四元数（rx/ry/rz/rw）与欧拉角（roll/pitch/yaw，ZYX）两种表示**
+            # - joint_states：ee_pose_names/ee_poses_flat 镜像进 joint_states
             mirror_names: List[str] = []
             mirror_values: List[float] = []
+            ee_poses_repr: List[List[float]] = []
             for route_name, pose in (("left_pose", left), ("right_pose", right)):
                 if pose is None:
                     continue
-                roll, pitch, yaw = _quat_to_euler_rpy(*pose[3:7])
-                mirror_names += [f"{route_name}_{d}" for d in _POSE_DIM_QUAT]
-                mirror_values += [float(v) for v in pose]
-                mirror_names += [f"{route_name}_{d}" for d in _POSE_DIM_EULER[3:]]
-                mirror_values += [roll, pitch, yaw]
+                if pose_dims is _POSE_DIM_QUAT:
+                    mirrored = [float(v) for v in pose]
+                else:
+                    roll, pitch, yaw = _quat_to_euler_rpy(*pose[3:7])
+                    mirrored = [float(pose[0]), float(pose[1]), float(pose[2]), roll, pitch, yaw]
+                ee_poses_repr.append(mirrored)
+                mirror_names += [f"{route_name}_{d}" for d in pose_dims]
+                mirror_values += mirrored
             if self._ee_pose_channel == "joint_states":
                 observation["ee_pose_names"] = mirror_names
                 observation["ee_poses_flat"] = mirror_values
@@ -634,7 +662,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                         for name, pose in (("left", left), ("right", right))
                         if pose is not None
                     ],
-                    "pose": [list(pose) for pose in ee_poses],
+                    "pose": ee_poses_repr,
                 }
             observation["ee_pose_group_names"] = [
                 name for name, pose in (("left", left), ("right", right)) if pose is not None
@@ -1046,21 +1074,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         poses_by_side: Dict[str, Dict[str, float]],
         command: Mapping[str, Any],
     ) -> List[str]:
-        """RobotController末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。"""
+        """RobotController末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。
+
+        ee 通道（``left/right_pose_cmd_ee``）按长度识别表示：7 维四元数或
+        6 维欧拉角（ZYX，内部转四元数），与观测 ``ee_pose_repr`` 输出一致。
+        """
         left = self._pose_from_dims(poses_by_side.get("left"), "left")
         right = self._pose_from_dims(poses_by_side.get("right"), "right")
         # joint_states 位姿存在时优先；否则回退 end_effector_poses 通道
         if left is None and "left_pose_cmd_ee" in command:
-            left = self.as_float_list(command["left_pose_cmd_ee"])
+            left = self._pose_list_to_quat(command["left_pose_cmd_ee"], "left_pose_cmd_ee")
         if right is None and "right_pose_cmd_ee" in command:
-            right = self.as_float_list(command["right_pose_cmd_ee"])
-        if left is None and right is None:
-            return []
-
-        if left is not None and not self._check_dims("left_pose_cmd_ee", left):
-            left = None
-        if right is not None and not self._check_dims("right_pose_cmd_ee", right):
-            right = None
+            right = self._pose_list_to_quat(command["right_pose_cmd_ee"], "right_pose_cmd_ee")
         if left is None and right is None:
             return []
 
@@ -1072,6 +1097,20 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         )
         sides = [side for side, pose in (("left", left), ("right", right)) if pose is not None]
         return ["ee_pose(" + "/".join(sides) + ")"]
+
+    def _pose_list_to_quat(self, value: Any, key: str) -> Optional[List[float]]:
+        """ee 通道位姿 list → 7 维 quat（接受 7 维 quat / 6 维 euler ZYX）。
+
+        维度不符时记录告警并返回 ``None``（该侧跳过）。
+        """
+        pose = self.as_float_list(value)
+        if len(pose) == POSE_DOF:
+            return pose
+        if len(pose) == POSE_DOF - 1:
+            qx, qy, qz, qw = _euler_rpy_to_quat(pose[3], pose[4], pose[5])
+            return [pose[0], pose[1], pose[2], qx, qy, qz, qw]
+        self._check_dims(key, pose)
+        return None
 
     def _apply_joint_position(
         self,

@@ -20,10 +20,11 @@
 # 安全提示：runtime.dry_run 默认 true（观测正常发布，动作只打日志不执行）；
 # 现场验证无误后再改为 false 真实执行。
 #
-# ★ 配置版本标记：config_rev: 2026-11-13-r2
+# ★ 配置版本标记：config_rev: 2026-11-13-r3
 #   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）、
-#   state/current 发布绑定（10Hz，collector=get_runtime）与末端位姿/夹爪
-#   观测发布位置单选（ee_pose_channel / gripper_channel，默认专用字段）。
+#   state/current 发布绑定（10Hz，collector=get_runtime）、末端位姿/夹爪
+#   观测发布位置单选（ee_pose_channel / gripper_channel，默认专用字段）与
+#   位姿角度表示选择（ee_pose_repr，quat/euler，对两种通道都生效）。
 #   现场核对：文件内应能搜到 "joint_names"。若与仓库最新不一致，
 #   请以仓库该文件为准，或重装包（pip install -e packages/cloudrobo-r2c）刷新
 #   安装目录内的打包副本。
@@ -61,11 +62,15 @@ hardware:
     #    不可同时发）───────────────────────────────────────────────────
     # ee_pose_channel: 末端位姿发到哪
     #   end_effector_poses（默认，专用字段 names+pose）| joint_states（镜像，
-    #   left_pose_* 位置+四元数+欧拉角）
+    #   left_pose_* 逐维镜像）
     # gripper_channel: 末端夹爪发到哪
     #   end_effector_states（默认，专用字段）| joint_states（镜像 left/right_gripper）
     ee_pose_channel: "end_effector_poses"
     gripper_channel: "end_effector_states"
+    # ee_pose_repr: 末端位姿角度表示（对 ee_pose_channel 的两种取值都生效）：
+    #   quat（默认，[x,y,z,rx,ry,rz,rw] 7 维）| euler（[x,y,z,roll,pitch,yaw]
+    #   6 维，ZYX；动作 ee 通道同时兼容 7 维 quat，euler 内部转 quat 下发）
+    ee_pose_repr: "quat"
     # RobotDds 初始化等待秒数（《指南》7.4：等待资源初始化，收到消息）
     init_wait_s: 0.5
     # 相机开关与启用的 G01 相机通道（《指南》9.1：head / hand_left / hand_right /
@@ -128,10 +133,11 @@ device_to_r2c:
 
     # --- 末端位姿镜像进 joint_states（仅当 hardware.config.ee_pose_channel:
     #     "joint_states" 时适配器产出 ee_pose_names/ee_poses_flat；此时
-    #     end_effector_poses 不发位姿（单选互斥）。镜像同时携带四元数
-    #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示，每侧 10 维、
-    #     两侧 20 维；joint_states.position 总维度 = 14 + 20 + 2 = 36，
-    #     云端模型输入维度需按所选通道配置） ---
+    #     end_effector_poses 不发位姿（单选互斥）。角度表示按 ee_pose_repr
+    #     单选：quat 每侧 7 维（left_pose_x/y/z/rx/ry/rz/rw）或 euler 每侧
+    #     6 维（left_pose_x/y/z/roll/pitch/yaw，ZYX）。joint_states.position
+    #     总维度 = 14 + 位姿段（quat 14 / euler 12）+ 夹爪段（gripper_channel
+    #     选 joint_states 时 2）——云端模型输入维度需按所选通道配置） ---
     - target_key: "joint_states.names"
       source_path: "ee_pose_names"
       list_mode: extend
