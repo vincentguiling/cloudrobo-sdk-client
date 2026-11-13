@@ -1152,8 +1152,8 @@ def test_example_cycler_cycles_groups_ping_pong():
     assert a4.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
     a5 = next_action()
     assert a5.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
-    # 夹爪全程插值：首步从当前角度开始（0.3 → 0.15 五步插值）
-    assert a1.end_effector_states.position[0] == pytest.approx([0.27, 0.27])
+    # 夹爪用最终角度不插值（真机调试结论）
+    assert a1.end_effector_states.position[0] == pytest.approx([0.15, 0.15])
 
 
 def test_example_ch8_pose_interp_joint_states_channel():
@@ -1194,6 +1194,6 @@ def test_example_ch8_joints_group_interpolates():
     # 首步 0.1 → 0.2 五步插值
     assert a.joint_states.position[0] == pytest.approx([0.12] * ARM_DOF)
     assert a.joint_states.position[-1] == pytest.approx([0.2] * ARM_DOF)
-    # 夹爪同样插值（当前 0.3 → 目标 0.5）
-    assert a.end_effector_states.position[0] == pytest.approx([0.34, 0.4])
+    # 夹爪用最终角度不插值（真机调试结论）
+    assert a.end_effector_states.position[0] == pytest.approx([0.5, 0.8])
     assert a.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])

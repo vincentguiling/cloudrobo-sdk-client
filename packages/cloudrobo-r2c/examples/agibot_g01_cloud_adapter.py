@@ -283,7 +283,7 @@ class ActionGroupCycler:
         current_gripper: Optional[Sequence[float]],
         current_poses: Optional[Dict[str, Sequence[float]]] = None,
     ) -> Actions:
-        """按下一组动作构建 Actions（关节/位姿/夹爪全程插值）。"""
+        """按下一组动作构建 Actions（关节/位姿插值、夹爪最终角度直出）。"""
         group = self._groups[self.next_group_index()]
         kind = group.get("kind", "joints")
 
@@ -323,7 +323,8 @@ class ActionGroupCycler:
             for i in range(steps)
         ]
         gripper_chunk = [
-            (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            # 夹爪用最终角度，不插值（真机调试结论）
+            (gripper_target).tolist()
             for i in range(steps)
         ]
 
@@ -426,7 +427,6 @@ class ActionGroupCycler:
             start_left = left_target
         if start_right is None or len(start_right) != POSE_DOF:
             start_right = right_target
-        start_gripper = list(current_gripper) if current_gripper else list(gripper_target)
 
         steps = self._steps
         left_chunk = [
@@ -436,10 +436,8 @@ class ActionGroupCycler:
             self._interp_pose7d(start_right, right_target, (i + 1) / steps) for i in range(steps)
         ]
         gripper_chunk = [
-            (
-                start_gripper[0] + (gripper_target[0] - start_gripper[0]) * (i + 1) / steps,
-                start_gripper[1] + (gripper_target[1] - start_gripper[1]) * (i + 1) / steps,
-            )
+            # 夹爪用最终角度，不插值（真机调试结论）
+            tuple(gripper_target)
             for i in range(steps)
         ]
 
@@ -532,7 +530,8 @@ class ActionGroupCycler:
             for i in range(steps)
         ]
         gripper_chunk = [
-            (start_gripper + (gripper_target - start_gripper) * (i + 1) / steps).tolist()
+            # 夹爪用最终角度，不插值（真机调试结论）
+            (gripper_target).tolist()
             for i in range(steps)
         ]
 
@@ -643,7 +642,16 @@ def _extract_current(observation: Any) -> Dict[str, Any]:
     gripper_out = (
         [left_grip, right_grip] if left_grip is not None and right_grip is not None else None
     )
-    return {"joints": joints, "gripper": gripper_out}
+    # 从 end_effector_poses 提取当前末端位姿（供位姿组 SLERP 插值起点）
+    poses: Dict[str, List[float]] = {}
+    try:
+        ee_names = [str(v) for v in observation.end_effector_poses.names]
+        ee_values = observation.end_effector_poses.pose
+        for name, pose in zip(ee_names, ee_values):
+            poses[str(name)] = [float(v) for v in pose]
+    except Exception:
+        poses = {}
+    return {"joints": joints, "gripper": gripper_out, "poses": poses}
 
 
 def main() -> None:
@@ -684,6 +692,7 @@ def main() -> None:
             now_ms=int(time.time() * 1000),
             current_joints=current["joints"],
             current_gripper=current["gripper"],
+            current_poses=current["poses"],
         )
         client.publish_actions(action)
 
