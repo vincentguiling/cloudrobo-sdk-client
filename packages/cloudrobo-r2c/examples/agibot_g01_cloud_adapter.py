@@ -691,7 +691,7 @@ def _extract_current(observation: Any) -> Dict[str, Any]:
         if index >= len(position):
             break
         value = position[index]
-        arm_match = re.match(r"^(left|right)_arm_joint_([1-7])$", name)
+        arm_match = re.match(r"^(left|right)_arm_joint([1-7])$", name)
         if arm_match is not None:
             side, joint_no = arm_match.group(1), int(arm_match.group(2))
             arm[(0 if side == "left" else 7) + joint_no - 1] = value

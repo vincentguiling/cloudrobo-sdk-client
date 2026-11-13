@@ -508,7 +508,7 @@ def test_robot_config_yaml_translates_observation_and_action():
     assert isinstance(observation, Observations)
     # joint_states：14 关节 + 位姿镜像（quat 7 + euler 3 每侧，共 20） + 夹爪 2
     assert len(observation.joint_states.position) == ARM_DOF + 20 + GRIPPER_DOF
-    assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint_1"
+    assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint1"
     assert list(observation.joint_states.names[ARM_DOF : ARM_DOF + 7]) == _pose_dim_names("left")
     assert list(observation.joint_states.names[ARM_DOF + 7 : ARM_DOF + 10]) == [
         "left_pose_roll",
@@ -704,8 +704,8 @@ def test_route_reject_pose_in_both_channels():
 
 
 def test_route_joints8_per_joint_names():
-    # 第 8 章关节控制：left_arm_joint1..7 / right_arm_joint1..7（不带下划线）
-    adapter = _connect()
+    # 关节控制接口为 robot_controller → set_joint_position_control
+    adapter = _connect({"joint_control_interface": "robot_controller"})
     left_group = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
     right_group = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4]
     names = [f"left_arm_joint{i}" for i in range(1, 8)]
@@ -741,7 +741,7 @@ def test_route_reject_partial_joints8():
 def test_route_reject_mixed_ch7_ch8_joint_names():
     # 第 7 章（带下划线）与第 8 章（不带下划线）关节名混用 → 拒绝
     adapter = _connect()
-    names = ["left_arm_joint_1", "left_arm_joint1"]
+    names = ["left_arm_joint1", "left_arm_joint1"]
     adapter.send_action({"joint_names": names, "arm_cmd_joint_pos": [0.1, 0.2]})
     assert not any(c[0] == "move_arm" for c in _last_robot().calls)
     assert _last_controller().joint_calls == []
@@ -771,8 +771,8 @@ def test_route_reject_joint_and_ee_pose_together():
     adapter = _connect()
     adapter.send_action(
         {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
-            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "joint_names": [f"left_arm_joint{i}" for i in range(1, 8)]
+            + [f"right_arm_joint{i}" for i in range(1, 8)],
             "arm_cmd_joint_pos": [0.1] * ARM_DOF,
             "left_pose_cmd_ee": LEFT_POSE,
             "right_pose_cmd_ee": RIGHT_POSE,
@@ -787,8 +787,8 @@ def test_route_reject_mixed_joint_and_pose_names():
     adapter = _connect()
     adapter.send_action(
         {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
-            + [f"right_arm_joint_{i}" for i in range(1, 8)]
+            "joint_names": [f"left_arm_joint{i}" for i in range(1, 8)]
+            + [f"right_arm_joint{i}" for i in range(1, 8)]
             + ["left_pose_x", "left_pose_y", "left_pose_z"]
             + ["left_pose_rx", "left_pose_ry", "left_pose_rz", "left_pose_rw"]
             + ["right_pose_x", "right_pose_y", "right_pose_z"]
@@ -827,7 +827,7 @@ def test_route_reject_partial_joints():
     adapter = _connect()
     adapter.send_action(
         {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 7)],
+            "joint_names": [f"left_arm_joint{i}" for i in range(1, 7)],
             "arm_cmd_joint_pos": [0.1] * 6,
         }
     )
@@ -922,8 +922,8 @@ def test_route_joints7_with_arm_joint_names():
     arm = [0.1] * ARM_DOF
     adapter.send_action(
         {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
-            + [f"right_arm_joint_{i}" for i in range(1, 8)],
+            "joint_names": [f"left_arm_joint{i}" for i in range(1, 8)]
+            + [f"right_arm_joint{i}" for i in range(1, 8)],
             "arm_cmd_joint_pos": arm,
         }
     )
@@ -1008,8 +1008,8 @@ def _load_example_module():
 
 def _demo_observation():
     joint_names = (
-        [f"left_arm_joint_{i}" for i in range(1, 8)]
-        + [f"right_arm_joint_{i}" for i in range(1, 8)]
+        [f"left_arm_joint{i}" for i in range(1, 8)]
+        + [f"right_arm_joint{i}" for i in range(1, 8)]
         + ["left_gripper", "right_gripper"]
     )
     joint_position = [0.1] * ARM_DOF + [0.3, 0.3]

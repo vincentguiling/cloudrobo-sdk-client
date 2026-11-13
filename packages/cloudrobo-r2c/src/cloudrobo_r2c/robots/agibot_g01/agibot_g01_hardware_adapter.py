@@ -2,20 +2,20 @@
 
 基于智元 GDK Python SDK（``a2d_sdk``）实现
 :class:`~cloudrobo_r2c.core.interfaces.IRobotHardwareAdapter`，接口依据
-《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）、第 8 章（RobotController）
+《智元精灵G01+GDK v1.5.0使用指南》RobotDds（RobotDds）、RobotController（RobotController）
 与第 9 章（CosineCamera）。
 
-**第 7 章 / 第 8 章控制按 ``joint_states.names`` 逐维区分**（云端动作的 names 决定路由，
+**RobotDds / RobotController控制按 ``joint_states.names`` 逐维区分**（云端动作的 names 决定路由，
 互斥与完整性校验不通过时拒绝执行整条动作）：
 
 - names 为双臂关节名 ``left_arm_joint_1..7`` / ``right_arm_joint_1..7``（14 维须齐全，
-  按名回填）→ 第 7 章关节控制 ``move_arm``
+  按名回填）→ RobotDds关节控制 ``move_arm``
 - names 为位姿分量 ``left_pose_x/y/z`` + ``left_pose_rx/ry/rz/rw``（四元数）或
-  ``left_pose_roll/pitch/yaw``（欧拉角，ZYX，内部转换）→ 第 8 章末端绝对位姿
+  ``left_pose_roll/pitch/yaw``（欧拉角，ZYX，内部转换）→ RobotController末端绝对位姿
   ``set_end_effector_pose_control``（各侧分量须完整）；末端位姿在 ``joint_states``
   与 ``end_effector_poses.pose`` 都可有，**同时存在时 joint_states 的位姿优先**
 - names 为部位组名（``left_arm`` / ``right_arm`` 等，position 按每组 7 关节解析）
-  → 第 8 章关节绝对位置控制 ``set_joint_position_control``
+  → RobotController关节绝对位置控制 ``set_joint_position_control``
 
 **互斥与完整性规则（违反即拒绝执行）**：
 
@@ -42,7 +42,7 @@
 - ``head_joint_positions``  — 头部 ``[yaw, pitch]``
 - ``waist_joint_positions`` — 腰部 ``[pitch, height_cm]``
 - ``left_ee_pose`` / ``right_ee_pose`` / ``ee_poses`` — 左/右末端位姿
-  ``[x, y, z, qx, qy, qz, qw]``（来自第 8 章 ``get_motion_status().frames``，
+  ``[x, y, z, qx, qy, qz, qw]``（来自RobotController ``get_motion_status().frames``，
   映射到 ``end_effector_poses``；未就绪或运控器不可用时不产出）
 - ``body_pose``             — 整体姿态关节状态（原样透传，float32 数组）
 - 相机图像按 ``camera_key_map`` 映射后以 R2C 键暴露（默认
@@ -50,7 +50,7 @@
 
 动作平铺字段（由 ``r2c_to_device`` 映射产生，缺省字段自动跳过）：
 
-- ``joint_names``           — ``joint_states.names``（第 7/8 章路由依据）
+- ``joint_names``           — ``joint_states.names``（RobotDds/RobotController路由依据）
 - ``arm_cmd_joint_pos``     — ``joint_states.position`` 前 14 维（关节或位姿，按路由解释）
 - ``gripper_cmd_pos``       — 夹持器 2 通道目标（任意角度）→ ``move_gripper``
 - ``hand_cmd_joint_pos``    — 灵巧手 12 关节目标 → ``move_hand``
@@ -119,7 +119,7 @@ EXPECTED_DIMS: Dict[str, int] = {
     "right_pose_cmd_ee": POSE_DOF,
 }
 
-# 第 8 章关节控制可用的部位组名（《指南》8.1 joint_group key）
+# RobotController关节控制可用的部位组名（《指南》8.1 joint_group key）
 JOINT_GROUP_NAMES = frozenset(
     {
         "left_arm",
@@ -143,10 +143,8 @@ JOINT_GROUP_NAMES = frozenset(
 _POSE_DIM_QUAT = ("x", "y", "z", "rx", "ry", "rz", "rw")
 _POSE_DIM_EULER = ("x", "y", "z", "roll", "pitch", "yaw")
 _POSE_DIM_NAME_RE = re.compile(r"^(left|right)_pose_(x|y|z|rx|ry|rz|rw|roll|pitch|yaw)$")
-# 双臂关节名（left_arm_joint_1..7 / right_arm_joint_1..7，第 7 章）
-_ARM_JOINT_NAME_RE = re.compile(r"^(left|right)_arm_joint_([1-7])$")
-# 第 8 章关节名（left_arm_joint1..7 / right_arm_joint1..7，不带下划线）
-_JOINT8_NAME_RE = re.compile(r"^(left|right)_arm_joint([1-7])$")
+# 双臂关节名（left_arm_joint_1..7 / right_arm_joint_1..7，RobotDds）
+_ARM_JOINT_NAME_RE = re.compile(r"^(left|right)_arm_joint([1-7])$")
 # 夹爪逐维 names（镜像进 joint_states；动作侧同名解析）
 GRIPPER_JOINT_NAMES = ("left_gripper", "right_gripper")
 
@@ -242,9 +240,9 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         - ``camera_group``            启用的 G01 相机通道列表
         - ``camera_key_map``          G01 通道名 → R2C 图像键
         - ``camera_poll_interval_s``  相机取流线程轮询间隔（默认 0.03s ≈ 30Hz）
-        - ``enable_motion_controller`` 是否启用 ``RobotController``（第 8 章，默认 true；
-                                      创建失败自动降级为仅第 7 章关节控制）
-        - ``control_lifetime_s``      第 8 章位姿/关节指令有效时间（默认 1.0s）
+        - ``enable_motion_controller`` 是否启用 ``RobotController``（RobotController，默认 true；
+                                      创建失败自动降级为仅RobotDds关节控制）
+        - ``control_lifetime_s``      RobotController位姿/关节指令有效时间（默认 1.0s）
         - ``pose_control_group``      位姿控制部位（默认 ["left_arm", "right_arm"]）
         - ``dry_run``                 适配器级干运行：只打印动作不执行
         - ``commands``                如 ``go_home`` 复位指令
@@ -270,7 +268,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._pose_control_group = list(
             self._config.get("pose_control_group", ["left_arm", "right_arm"])
         )
-        # 第 8 章绝对位姿/关节控制在默认伺服模式下工作（《指南》8.1 mode=2 专为
+        # RobotController绝对位姿/关节控制在默认伺服模式下工作（《指南》8.1 mode=2 专为
         # trajectory_tracking_control 设计，不适用于 set_joint_position_control
         # 或 set_end_effector_pose_control）。不自动切换运动模式。
         self._auto_motion_control_mode = bool(
@@ -279,6 +277,11 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
         self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 1))  # servo
         self._active_motion_mode: Optional[int] = None
+        # 关节控制接口选择：robot_dds (move_arm) 或 robot_controller
+        # (set_joint_position_control)
+        self._joint_control_interface = str(
+            self._config.get("joint_control_interface", "robot_dds")
+        ).lower()
         # 夹爪原始量程（《指南》7.2.1：[35, 120]），观测侧归一化到 [0, 1]；
         # move_gripper 同时接受 [0,1] 归一化与 [35,120] 原始值，动作侧无需反向转换
         gr = self._config.get("gripper_raw_range", [35.0, 120.0])
@@ -582,14 +585,14 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         **互斥与完整性校验不通过时拒绝执行整条动作**：
 
         - ``left_arm_joint_N`` / ``right_arm_joint_N``（逐维关节，须 14 维齐全）→
-          第 7 章 ``move_arm``
+          RobotDds ``move_arm``
         - ``left_pose_x/y/z`` + ``left_pose_rx/ry/rz/rw``（四元数）或
-          ``left_pose_roll/pitch/yaw``（欧拉角，ZYX）→ 第 8 章末端位姿
+          ``left_pose_roll/pitch/yaw``（欧拉角，ZYX）→ RobotController末端位姿
           ``set_end_effector_pose_control``；须各侧分量完整；与
           ``end_effector_poses.pose`` 同时存在时 joint_states 优先
         - ``left_gripper`` / ``right_gripper``（两侧须同时出现）→ ``move_gripper``
           （优先于 ``gripper_cmd_pos`` 通道）
-        - 全部 names 均为部位组名（每组 7 关节）→ 第 8 章 ``set_joint_position_control``
+        - 全部 names 均为部位组名（每组 7 关节）→ RobotController ``set_joint_position_control``
         - 互斥规则：关节与末端位姿不得混用（含 ee 通道）；四元数与欧拉角不得混用
 
         ``runtime.dry_run``（客户端级）或 ``hardware.config.dry_run``（适配器级）
@@ -622,21 +625,18 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             logger.error("[AgiBotG01] action rejected: %s", reject_reason)
             return
 
-        # —— 双臂/位姿主控制：按 names 解析结果路由第 7 / 8 章 ——
+        # —— 双臂/位姿主控制：按 names 解析结果路由 ——
         if parsed["poses"]["left"] or parsed["poses"]["right"]:
-            # 第 8 章末端位姿（绝对位姿控制；校验已保证各侧分量完整）
+            # 末端位姿（绝对位姿控制；校验已保证各侧分量完整）
             executed += self._apply_ch8_pose(client, parsed["poses"], command)
-        elif parsed["joints8"]["left"] or parsed["joints8"]["right"]:
-            # 第 8 章关节绝对位置控制（left_arm_jointN 逐关节名，校验已保证齐全）
-            executed += self._apply_ch8_joints(client, parsed["joints8"], parsed["groups"])
         elif parsed["groups"]:
-            # 第 8 章关节绝对位置控制（遗留组名格式，校验已保证每组 7 关节）
-            executed += self._apply_ch8_joints(client, {"left": {}, "right": {}}, parsed["groups"])
+            # 关节绝对位置控制（遗留组名格式，校验已保证每组 7 关节）
+            executed += self._apply_ch8_joints(client, {}, parsed["groups"])
         else:
-            # 第 7 章关节控制（names 须 14 关节齐全；无 names 按 position 前 14 维）
-            executed += self._apply_ch7_arm(client, parsed["joints"], position_values)
+            # 关节控制（接口由 joint_control_interface 配置决定）
+            executed += self._apply_joint_control(client, parsed["joints"], position_values)
             # ee 通道兜底：仅当 joint_states 不含任何关节/位姿分量时允许
-            # （关节与末端互斥），且 end_effector_poses 有位姿时走第 8 章
+            # （关节与末端互斥），且 end_effector_poses 有位姿时走末端位姿控制
             if "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command:
                 executed += self._apply_ch8_pose(client, {"left": {}, "right": {}}, command)
 
@@ -659,7 +659,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 client.move_gripper(values)
                 executed.append("gripper_cmd_pos")
 
-        # —— 第 7 章其余部位（灵巧手/头/腰） ——
+        # —— RobotDds其余部位（灵巧手/头/腰） ——
         handlers = (
             ("hand_cmd_joint_pos", client.move_hand),
             ("head_cmd_joint_pos", client.move_head),
@@ -711,18 +711,17 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
 
         返回 dict：
 
-        - ``joints``:   {canonical_index: value}（第 7 章双臂关节
+        - ``joints``:   {canonical_index: value}（RobotDds双臂关节
           ``left_arm_joint_N``，带下划线）
-        - ``joints8``:  {"left": {joint_no: value}, "right": {...}}（第 8 章关节
+        - ``joints8``:  {"left": {joint_no: value}, "right": {...}}（RobotController关节
           ``left_arm_jointN``，不带下划线）
-        - ``poses``:    {"left": {dim: value}, "right": {...}}（第 8 章位姿分量）
+        - ``poses``:    {"left": {dim: value}, "right": {...}}（RobotController位姿分量）
         - ``gripper``:  {"left": value, "right": value}
         - ``groups``:   {组名: [7 关节]}（仅当全部条目均为组名时解析，遗留兼容）
         - ``unknown``:  无法识别的 names
         """
         result: Dict[str, Any] = {
             "joints": {},
-            "joints8": {"left": {}, "right": {}},
             "poses": {"left": {}, "right": {}},
             "gripper": {},
             "groups": {},
@@ -753,13 +752,6 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                     continue
                 side, joint_no = arm_match.group(1), int(arm_match.group(2))
                 result["joints"][(0 if side == "left" else 7) + joint_no - 1] = value
-                continue
-            joints8_match = _JOINT8_NAME_RE.match(name)
-            if joints8_match is not None:
-                if value is None:
-                    continue
-                side, joint_no = joints8_match.group(1), int(joints8_match.group(2))
-                result["joints8"][side][joint_no] = value
                 continue
             pose_match = _POSE_DIM_NAME_RE.match(name)
             if pose_match is not None:
@@ -797,22 +789,22 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         """
         has_pose = bool(parsed["poses"]["left"] or parsed["poses"]["right"])
         has_joint = bool(parsed["joints"])
-        has_joints8 = bool(parsed["joints8"]["left"] or parsed["joints8"]["right"])
+        
         has_groups = bool(parsed["groups"])
         has_gripper = bool(parsed["gripper"])
         ee_pose_present = "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command
 
-        # 关节与末端位姿互斥（joint_states 内不得混用；第 8 章关节名同属关节）
-        if has_pose and (has_joint or has_joints8 or has_groups):
+        # 关节与末端位姿互斥（joint_states 内不得混用；RobotController关节名同属关节）
+        if has_pose and (has_joint or has_groups):
             return "关节与末端位姿互斥：joint_states 同时包含关节与位姿分量"
 
         # 末端位姿双通道互斥：同时出现在 joint_states 与 end_effector_poses → 拒绝
         if has_pose and ee_pose_present:
             return "末端位姿同时出现在 joint_states 与 end_effector_poses，拒绝执行"
 
-        # 第 7 章与第 8 章关节名不得混用
-        if has_joint and has_joints8:
-            return "第 7 章（left_arm_joint_N）与第 8 章（left_arm_jointN）关节名混用，" "拒绝执行"
+        # RobotDds与RobotController关节名不得混用
+        if False:
+            return "RobotDds（left_arm_joint_N）与RobotController（left_arm_jointN）关节名混用，" "拒绝执行"
 
         # 四元数与欧拉角互斥（逐侧并跨侧一致）
         if has_pose:
@@ -841,7 +833,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             if len(reprs) > 1:
                 return "四元数与欧拉角互斥（左右侧表示不一致）"
 
-        # 第 7 章关节须 14 关节齐全（不补帧、不部分执行）
+        # RobotDds关节须 14 关节齐全（不补帧、不部分执行）
         if has_joint:
             missing = sorted(set(range(ARM_DOF)) - set(parsed["joints"]))
             if missing:
@@ -850,15 +842,6 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             for name, segment in parsed["groups"].items():
                 if len(segment) != 7:
                     return f"部位组 {name} 关节不全（须 7 维），不硬执行"
-        # 第 8 章关节：每侧出现的关节编号须构成完整 1..7
-        if has_joints8:
-            for side in ("left", "right"):
-                nums = parsed["joints8"][side]
-                if not nums:
-                    continue
-                missing = sorted(set(range(1, 8)) - set(nums))
-                if missing:
-                    return f"第 8 章 {side}_arm_joint 关节不全，缺少编号 {missing}，不硬执行"
 
         # 夹爪两侧须同时出现
         if has_gripper and ("left" not in parsed["gripper"] or "right" not in parsed["gripper"]):
@@ -884,27 +867,45 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             return f"双臂关节不全（无 names 时 position 前 {ARM_DOF} 维须齐全），不硬执行"
         return None
 
-    def _apply_ch7_arm(
+    def _apply_joint_control(
         self,
         client: AgiBotG01Client,
         joints_by_idx: Dict[int, float],
         position_values: Optional[List[float]],
     ) -> List[str]:
-        """第 7 章双臂关节控制（校验已保证 14 关节齐全或走旧位置式兼容）。"""
+        """关节控制（接口由 ``joint_control_interface`` 配置决定）。
+
+        - ``"robot_dds"``（默认）→ ``RobotDds.move_arm``
+        - ``"robot_controller"`` → ``RobotController.set_joint_position_control``
+        """
         self._ensure_motion_mode(client, self._ch7_motion_mode)
+        arm = self._resolve_arm_values(joints_by_idx, position_values)
+        if arm is None:
+            return []
+        if self._joint_control_interface == "robot_controller":
+            joint_group = {"left_arm": arm[:7], "right_arm": arm[7:14]}
+            client.set_joint_position_control(self._control_lifetime_s, joint_group)
+            return ["joint_states_robot_controller"]
+        client.move_arm(arm)
+        return ["joint_states_arm"]
+
+    @staticmethod
+    def _resolve_arm_values(
+        joints_by_idx: Dict[int, float],
+        position_values: Optional[List[float]],
+    ) -> Optional[List[float]]:
+        """从解析结果组装 14 维双臂关节值；不完整返回 None。"""
         if joints_by_idx:
             arm = [0.0] * ARM_DOF
             for idx, value in joints_by_idx.items():
                 arm[idx] = value
-            client.move_arm(arm)
-            return ["joint_states_arm"]
+            return arm
         if position_values is not None and len(position_values) >= ARM_DOF:
-            client.move_arm(position_values[:ARM_DOF])
-            return ["arm_cmd_joint_pos"]
-        return []
+            return position_values[:ARM_DOF]
+        return None
 
     def _ensure_motion_mode(self, client: AgiBotG01Client, mode: int) -> None:
-        """第 7/8 章路由切换时同步运动控制模式（《指南》8.1，伺服/规划）。
+        """RobotDds/RobotController路由切换时同步运动控制模式（《指南》8.1，伺服/规划）。
 
         绝对位姿/关节指令在伺服模式下会被视为位置阶跃；仅在模式变化时下发。
         """
@@ -926,7 +927,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         poses_by_side: Dict[str, Dict[str, float]],
         command: Mapping[str, Any],
     ) -> List[str]:
-        """第 8 章末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。
+        """RobotController末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。
         """
         left = self._pose_from_dims(poses_by_side.get("left"), "left")
         right = self._pose_from_dims(poses_by_side.get("right"), "right")
@@ -960,7 +961,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         joints8: Dict[str, Dict[int, float]],
         groups: Dict[str, List[float]],
     ) -> List[str]:
-        """第 8 章关节绝对位置控制（``set_joint_position_control``）。
+        """RobotController关节绝对位置控制（``set_joint_position_control``）。
 
         - ``joints8``：``left_arm_jointN`` 逐关节名（按关节编号组装为组）
         - ``groups``：遗留组名格式（每组 7 关节，直接透传）
