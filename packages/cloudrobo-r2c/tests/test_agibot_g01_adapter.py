@@ -738,7 +738,7 @@ def test_route_reject_partial_joints8():
     assert _last_controller().joint_calls == []
 
 
-def test_route_reject_mixed_ch7_ch8_joint_names():
+def test_route_reject_mixed_joint_name_formats():
     # 第 7 章（带下划线）与第 8 章（不带下划线）关节名混用 → 拒绝
     adapter = _connect()
     names = ["left_arm_joint1", "left_arm_joint1"]
@@ -1020,14 +1020,14 @@ def _demo_observation():
 
 
 # 第 8 章示例组（与样例中注释掉的 GROUP_POSE / GROUP_JOINTS8 同构）
-_CH8_POSE_GROUP = {
+_EE_POSE_GROUP = {
     "name": "ee_pose(绝对位姿)",
     "kind": "ee_pose",
     "left_pose": LEFT_POSE,
     "right_pose": RIGHT_POSE,
     "gripper": [0.3, 0.3],
 }
-_CH8_JOINTS8_GROUP = {
+_JOINT_POSITION_GROUP = {
     "name": "joint_position(组名关节)",
     "kind": "joint_position",
     "joints": [0.2] * ARM_DOF,
@@ -1039,7 +1039,7 @@ def test_example_ee_pose_group_joint_states_channel():
     """ee_pose 组：绝对位姿经 joint_states 逐维 names（四元数）+ 夹爪。"""
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(
-        groups=[dict(_CH8_POSE_GROUP)],
+        groups=[dict(_EE_POSE_GROUP)],
         steps=5,
         pose_channel="joint_states",
         pose_repr="quat",
@@ -1066,7 +1066,7 @@ def test_example_ee_pose_group_ee_channel_and_euler_repr():
     """
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(
-        groups=[dict(_CH8_POSE_GROUP)],
+        groups=[dict(_EE_POSE_GROUP)],
         steps=5,
         pose_channel="ee",
         pose_repr="euler",
@@ -1084,7 +1084,7 @@ def test_example_joint_position_group_per_joint_names():
     """joint_position 组：left_arm_joint1..7 / right_arm_joint1..7 逐关节名。"""
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(
-        groups=[dict(_CH8_JOINTS8_GROUP)],
+        groups=[dict(_JOINT_POSITION_GROUP)],
         steps=5,
     )
     current = demo._extract_current(_demo_observation())
@@ -1092,7 +1092,7 @@ def test_example_joint_position_group_per_joint_names():
     assert a.joint_states.names == [f"left_arm_joint{i}" for i in range(1, 8)] + [
         f"right_arm_joint{i}" for i in range(1, 8)
     ]
-    assert a.joint_states.position[-1] == pytest.approx(_CH8_JOINTS8_GROUP["joints"])
+    assert a.joint_states.position[-1] == pytest.approx(_JOINT_POSITION_GROUP["joints"])
     assert a.end_effector_poses == {}
 
 
@@ -1162,7 +1162,7 @@ def test_example_ee_pose_interp_joint_states_channel():
 def test_example_joint_position_group_interpolates():
     """joint_position 组：关节与夹爪均从当前值线性插值到目标。"""
     demo = _load_example_module()
-    cycler = demo.ActionGroupCycler(groups=[dict(_CH8_JOINTS8_GROUP)], steps=5)
+    cycler = demo.ActionGroupCycler(groups=[dict(_JOINT_POSITION_GROUP)], steps=5)
     current = demo._extract_current(_demo_observation())
     a = cycler.build_action(1000, current["joints"], current["gripper"])
     # 首步 0.1 → 0.2 五步插值
