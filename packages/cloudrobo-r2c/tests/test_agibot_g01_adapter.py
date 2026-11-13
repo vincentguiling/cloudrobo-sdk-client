@@ -346,6 +346,7 @@ def test_get_observation_maps_custom_camera_keys():
 
 
 def test_observation_exposes_ee_poses():
+    """默认（ee_pose_channel: end_effector_poses）位姿只发专用字段。"""
     adapter = _connect()
     obs = adapter.get_observation()
     assert obs["left_ee_pose"] == pytest.approx([0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071])
@@ -353,6 +354,18 @@ def test_observation_exposes_ee_poses():
     # 合并字段 ee_poses：按 left、right 顺序
     assert obs["ee_poses"][0] == pytest.approx(obs["left_ee_pose"])
     assert obs["ee_poses"][1] == pytest.approx(obs["right_ee_pose"])
+    # 专用字段数据源（单选）：ee_poses_data 在，joint_states 镜像字段不在
+    assert obs["ee_poses_data"]["names"] == ["left", "right"]
+    assert obs["ee_poses_data"]["pose"][0] == pytest.approx(obs["left_ee_pose"])
+    assert obs["ee_poses_data"]["pose"][1] == pytest.approx(obs["right_ee_pose"])
+    assert "ee_pose_names" not in obs
+    assert "ee_poses_flat" not in obs
+
+
+def test_observation_ee_pose_mirror_in_joint_states_mode():
+    """ee_pose_channel: joint_states 时位姿镜像字段在、专用字段数据源不在。"""
+    adapter = _connect({"ee_pose_channel": "joint_states"})
+    obs = adapter.get_observation()
     # 镜像进 joint_states 所需的逐维 names（四元数 + 欧拉角两种表示同时携带）
     assert obs["ee_pose_names"] == (
         _pose_dim_names("left", "quat")
@@ -370,6 +383,25 @@ def test_observation_exposes_ee_poses():
     assert obs["ee_poses_flat"][7:10] == pytest.approx(left_rpy)
     assert obs["ee_poses_flat"][10:17] == pytest.approx(obs["right_ee_pose"])
     assert obs["ee_poses_flat"][17:20] == pytest.approx(right_rpy)
+    # 单选互斥：专用字段数据源不再产出
+    assert "ee_poses_data" not in obs
+
+
+def test_observation_gripper_channel_joint_states_mode():
+    """gripper_channel: joint_states 时夹爪镜像字段在、专用字段不在。"""
+    adapter = _connect({"gripper_channel": "joint_states"})
+    obs = adapter.get_observation()
+    assert obs["joint_gripper_names"] == ["left_gripper", "right_gripper"]
+    assert list(obs["joint_gripper_positions"]) == pytest.approx([0.25, 0.75])
+    assert "gripper_positions" not in obs
+    assert "ee_gripper_names" not in obs
+
+
+def test_invalid_channel_config_rejected():
+    with pytest.raises(ValueError, match="ee_pose_channel"):
+        create_agibot_g01_adapter({"ee_pose_channel": "both"})
+    with pytest.raises(ValueError, match="gripper_channel"):
+        create_agibot_g01_adapter({"gripper_channel": "both"})
 
 
 def test_observation_ee_poses_absent_without_motion_status():
@@ -483,7 +515,7 @@ def test_actions_require_connection():
 
 
 def test_get_runtime_returns_current_state_frame():
-    """state/current 帧与 observation 的 joint_states 一致（关节/位姿/夹爪）。"""
+    """state/current 帧与 observation 一致（默认：位姿/夹爪发专用字段）。"""
     from cloudrobo_r2c.common.models import RunTimeMessage
     from cloudrobo_r2c.translators.device_translator import (
         ConfigurableDeviceTranslator,
@@ -499,24 +531,61 @@ def test_get_runtime_returns_current_state_frame():
     assert isinstance(frame["timestamp"], int)
     assert frame["location"] == location
     js = frame["joint_states"]
-    # 与 observation 的 joint_states 完全一致：14 关节 + 位姿镜像（表示同
-    # observation：位置 + 四元数 + 欧拉角）+ 夹爪 2 通道（归一化 [0, 1]）
+    # joint_states 与 observation 一致：默认模式只含双臂 14 关节（位姿/夹爪
+    # 走专用字段，单选互斥）
     assert js["names"] == list(observation.joint_states.names)
     assert js["position"] == pytest.approx(list(observation.joint_states.position))
-    assert len(js["position"]) == ARM_DOF + 20 + GRIPPER_DOF
-    assert js["names"][:ARM_DOF][0] == "left_arm_joint1"
-    assert js["names"][-GRIPPER_DOF:] == ["left_gripper", "right_gripper"]
-    # 位姿位置（x/y/z）来自 get_motion_status frames
-    assert js["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx([0.13, 0.89, 0.85])
-    assert js["position"][ARM_DOF + 10 : ARM_DOF + 13] == pytest.approx([0.13, -0.89, 0.85])
-    # 夹爪 [35, 120] → [0, 1]
-    assert js["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
+    assert len(js["position"]) == ARM_DOF
+    assert js["names"][0] == "left_arm_joint1"
     assert js["velocity"] == []
     assert js["torque"] == []
+    # end_effector_states：夹爪位置（[35, 120] → [0, 1]）与 observation 一致
+    assert frame["end_effector_states"]["names"] == ["left_gripper", "right_gripper"]
+    assert frame["end_effector_states"]["position"] == pytest.approx([0.25, 0.75])
+    assert frame["end_effector_states"]["position"] == pytest.approx(
+        list(observation.end_effector_states.position)
+    )
+    # end_effector_poses：位置 x/y/z 来自 get_motion_status frames，与 observation 一致
+    assert frame["end_effector_poses"]["names"] == ["left", "right"]
+    assert frame["end_effector_poses"]["pose"][0] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
+    )
+    assert frame["end_effector_poses"]["pose"][1] == pytest.approx(
+        list(observation.end_effector_poses.pose[1])
+    )
+    assert "end_effector_poses" in frame and "end_effector_states" in frame
     # 帧 dict 可被 state/current 绑定的 proto wrapper（RunTimeMessage）接受
     message = RunTimeMessage.from_dict(frame)
     assert message.location == location
-    assert len(message.joint_states.position) == len(js["position"])
+    assert message.end_effector_states.position == pytest.approx([0.25, 0.75])
+    assert message.end_effector_poses.pose[0] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
+    )
+
+
+def test_get_runtime_joint_states_mode_matches_observation():
+    """channel 均选 joint_states 时，帧与 observation 的 joint_states 一致（36 维）。"""
+    from cloudrobo_r2c.translators.device_translator import (
+        ConfigurableDeviceTranslator,
+    )
+
+    adapter = _connect({"ee_pose_channel": "joint_states", "gripper_channel": "joint_states"})
+    config = _load_robot_config()
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    observation = translator.device_to_r2c(adapter.get_observation())
+
+    frame = adapter.get_runtime()
+    js = frame["joint_states"]
+    assert js["names"] == list(observation.joint_states.names)
+    assert js["position"] == pytest.approx(list(observation.joint_states.position))
+    # 14 关节 + 位姿镜像（quat 7 + euler 3 每侧） + 夹爪 2 = 36
+    assert len(js["position"]) == ARM_DOF + 20 + GRIPPER_DOF
+    assert js["names"][:ARM_DOF][0] == "left_arm_joint1"
+    assert js["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx([0.13, 0.89, 0.85])
+    assert js["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
+    # 单选互斥：专用字段不再出现在帧里
+    assert "end_effector_states" not in frame
+    assert "end_effector_poses" not in frame
 
 
 def test_get_runtime_zero_fills_failed_state_query():
@@ -526,9 +595,9 @@ def test_get_runtime_zero_fills_failed_state_query():
     frame = adapter.get_runtime()
     # 双臂查询失败 → 零值回退；位姿与夹爪查询不受影响
     assert frame["joint_states"]["position"][:ARM_DOF] == [0.0] * ARM_DOF
-    assert frame["joint_states"]["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
-    assert frame["joint_states"]["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx(
-        [0.13, 0.89, 0.85]
+    assert frame["end_effector_states"]["position"] == pytest.approx([0.25, 0.75])
+    assert frame["end_effector_poses"]["pose"][0] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
     )
 
 
@@ -542,12 +611,44 @@ def test_robot_config_yaml_binds_state_current_topic():
     assert binding["collector"] == "get_runtime"
     assert binding["proto"] == "cloudrobo_r2c.common.models:RunTimeMessage"
     assert config["hardware"]["config"].get("location") == "广东深圳坂田基地E3实验室"
+    # 发布位置单选默认值：专用字段（end_effector_poses / end_effector_states）
+    assert config["hardware"]["config"].get("ee_pose_channel") == "end_effector_poses"
+    assert config["hardware"]["config"].get("gripper_channel") == "end_effector_states"
     # 绑定可被真实解析器接受（proto 名、collector 名等校验）
     from cloudrobo_r2c.client.topic_config import parse_topic_bindings
 
     bindings = parse_topic_bindings(topics)
     assert len(bindings) == 1
     assert bindings[0].rate_hz == 10
+
+
+def test_robot_config_yaml_joint_states_channel_mode():
+    """ee_pose_channel/gripper_channel 均选 joint_states 时端到端镜像 36 维。"""
+    from cloudrobo_r2c.translators.device_translator import (
+        ConfigurableDeviceTranslator,
+    )
+
+    config = _load_robot_config()
+    config["hardware"]["config"]["ee_pose_channel"] = "joint_states"
+    config["hardware"]["config"]["gripper_channel"] = "joint_states"
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    adapter = _connect({"ee_pose_channel": "joint_states", "gripper_channel": "joint_states"})
+    observation = translator.device_to_r2c(adapter.get_observation())
+    # joint_states：14 关节 + 位姿镜像（quat 7 + euler 3 每侧） + 夹爪 2 = 36
+    assert len(observation.joint_states.position) == ARM_DOF + 20 + GRIPPER_DOF
+    assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint1"
+    assert list(observation.joint_states.names[ARM_DOF : ARM_DOF + 7]) == _pose_dim_names("left")
+    assert list(observation.joint_states.names[-GRIPPER_DOF:]) == [
+        "left_gripper",
+        "right_gripper",
+    ]
+    assert observation.joint_states.position[ARM_DOF : ARM_DOF + 7] == pytest.approx(
+        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
+    )
+    assert observation.joint_states.position[-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
+    # 单选互斥：专用字段不再发布位姿/夹爪内容
+    assert len(observation.end_effector_states.position) == 0
+    assert len(observation.end_effector_poses.pose) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -581,47 +682,18 @@ def test_robot_config_yaml_translates_observation_and_action():
     obs = adapter.get_observation()
     observation = translator.device_to_r2c(obs)
     assert isinstance(observation, Observations)
-    # joint_states：14 关节 + 位姿镜像（quat 7 + euler 3 每侧，共 20） + 夹爪 2
-    assert len(observation.joint_states.position) == ARM_DOF + 20 + GRIPPER_DOF
-    assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint1"
-    assert list(observation.joint_states.names[ARM_DOF : ARM_DOF + 7]) == _pose_dim_names("left")
-    assert list(observation.joint_states.names[ARM_DOF + 7 : ARM_DOF + 10]) == [
-        "left_pose_roll",
-        "left_pose_pitch",
-        "left_pose_yaw",
-    ]
-    assert list(observation.joint_states.names[ARM_DOF + 10 : ARM_DOF + 17]) == _pose_dim_names(
-        "right"
+    # 默认（ee_pose_channel: end_effector_poses / gripper_channel:
+    # end_effector_states）：joint_states 只含双臂 14 关节，位姿与夹爪
+    # 分别发专用字段（单选互斥，不可同时发）
+    assert len(observation.joint_states.position) == ARM_DOF
+    assert observation.joint_states.names[0] == "left_arm_joint1"
+    assert observation.joint_states.names[-1] == "right_arm_joint7"
+    assert observation.joint_states.position == pytest.approx(
+        [float(i + 1) / 10 for i in range(ARM_DOF)]
     )
-    assert list(observation.joint_states.names[ARM_DOF + 17 : ARM_DOF + 20]) == [
-        "right_pose_roll",
-        "right_pose_pitch",
-        "right_pose_yaw",
-    ]
-    assert observation.joint_states.position[ARM_DOF : ARM_DOF + 7] == pytest.approx(
-        [0.13, 0.89, 0.85, -0.7071, 0.0, 0.0, 0.7071]
-    )
-    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
-        _quat_to_euler_rpy,
-    )
-
-    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
-    right_rpy = _quat_to_euler_rpy(0.0, -0.7071, 0.7071, 0.0)
-    assert observation.joint_states.position[ARM_DOF + 7 : ARM_DOF + 10] == pytest.approx(
-        list(left_rpy)
-    )
-    assert observation.joint_states.position[ARM_DOF + 10 : ARM_DOF + 17] == pytest.approx(
-        [0.13, -0.89, 0.85, 0.0, -0.7071, 0.7071, 0.0]
-    )
-    assert observation.joint_states.position[ARM_DOF + 17 : ARM_DOF + 20] == pytest.approx(
-        list(right_rpy)
-    )
-    assert list(observation.joint_states.names[-GRIPPER_DOF:]) == [
-        "left_gripper",
-        "right_gripper",
-    ]
-    assert observation.joint_states.position[-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
-    assert len(observation.end_effector_states.position) == GRIPPER_DOF
+    # 夹爪 → end_effector_states（[35, 120] 归一化到 [0, 1]）
+    assert list(observation.end_effector_states.names) == ["left_gripper", "right_gripper"]
+    assert observation.end_effector_states.position == pytest.approx([0.25, 0.75])
     # 相机映射为 JPEG 字节
     jpeg = observation.images.color.get("cam_high")
     assert jpeg is not None and jpeg[:2] == b"\xff\xd8"

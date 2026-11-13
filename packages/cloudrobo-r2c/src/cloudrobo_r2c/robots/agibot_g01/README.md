@@ -76,13 +76,20 @@ pip install "hw-cloudrobo-r2c[client]"
 | `pose_control_group` | ["left_arm", "right_arm"] | 位姿控制部位（`set_end_effector_pose_control` 的 control_group） |
 | `dry_run` | false | 适配器级干运行：只打印动作不执行 |
 | `location` | "" | `state/current` 帧 `location` 字段（`hardware.config.location`，按现场填写） |
+| `ee_pose_channel` | `end_effector_poses` | 末端位姿发布位置（单选）：`end_effector_poses`（专用字段）或 `joint_states`（镜像，位置+四元数+欧拉角） |
+| `gripper_channel` | `end_effector_states` | 末端夹爪发布位置（单选）：`end_effector_states`（专用字段）或 `joint_states`（镜像 `left/right_gripper`） |
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
+
+两个 channel 均为**单选、互斥不可同时发**，观测与 `state/current` 使用同一选择；
+选择 `joint_states` 时云端模型输入维度需按镜像后的 `joint_states.position` 维度配置
+（14 关节 + 位姿镜像 20 + 夹爪 2 = 36）。
 
 state/current 发布：配置已内置 `hardware.topics` 的
 `{project_id}/{device_id}/state/current` 绑定（10Hz，`collector: get_runtime`）。
-发布内容与 observation 的 `joint_states` 一致（同一构造路径）：双臂 14 关节 +
-末端位姿镜像（位置 + 角度表示同 observation：四元数与欧拉角）+ 夹爪 2 通道
-（归一化 `[0, 1]`）；不取相机图像，位姿不可用时与观测一致省略位姿段。
+发布内容与 observation 一致（同一构造路径，不取相机图像）：双臂 14 关节 +
+末端位姿（按 `ee_pose_channel` 单选：`end_effector_poses` 段或 `joint_states`
+镜像）+ 夹爪位置（按 `gripper_channel` 单选：`end_effector_states` 段或
+`joint_states` 镜像，`[35, 120]` 归一化 `[0, 1]`）；位姿不可用时与观测一致省略。
 
 深度/鱼眼通道接入：在 `camera_group` 中加入通道名，并在 `device_to_r2c.mappings`
 仿照现有条目增加 `images.color.*`（或深度用 `images.depth.*` + `ndarray_to_png`）映射。
@@ -114,17 +121,23 @@ state/current 发布：配置已内置 `hardware.topics` 的
   夹爪须两侧同时出现，否则拒绝执行
 - 未知 names 视为协议不一致，拒绝执行
 
-### 观测镜像：位姿与夹爪复制进 joint_states
+### 观测发布位置：末端位姿与夹爪单选（ee_pose_channel / gripper_channel）
 
-`device_to_r2c` 会把末端位姿与夹爪复制一份进 `joint_states`（YAML 已内置）：
+末端位姿与夹爪的观测发布位置由 `hardware.config` 的 `ee_pose_channel` /
+`gripper_channel` 各自单选（**互斥，不可同时发**），观测与 `state/current`
+使用同一选择：
 
-- 14 双臂关节角 + 末端位姿逐维镜像（**同时携带四元数与欧拉角两种表示**：每侧
-  `left_pose_x/y/z/rx/ry/rz/rw` 7 维 + `left_pose_roll/pitch/yaw` 3 维 = 10 维，
-  欧拉角由四元数转换；两侧共 20 维）+ 夹爪 `left_gripper` / `right_gripper` 2 维
-- 即 `joint_states.position` 维度 = 14 + 20 + 2 = 36，**云端模型输入维度需按此配置**
-- 同时 `end_effector_poses.pose` 与 `end_effector_states.position` 仍照常各发送一份；
-  位姿不可用（运控器禁用/未就绪）时仅省略位姿段
-- 注意：动作侧（r2c_to_device）四元数与欧拉角仍互斥——云端回传位姿指令时只能选一种表示
+| 内容 | `end_effector_*`（默认） | `joint_states`（镜像） |
+|---|---|---|
+| 末端位姿（`ee_pose_channel`） | `end_effector_poses.names/pose`（专用字段） | `joint_states` 镜像：每侧 `left_pose_x/y/z/rx/ry/rz/rw`（四元数）+ `left_pose_roll/pitch/yaw`（欧拉角，ZYX），每侧 10 维 |
+| 夹爪（`gripper_channel`） | `end_effector_states.names/position`（专用字段，`[0,1]` 归一化） | `joint_states` 镜像：`left_gripper` / `right_gripper` 2 维 |
+
+- 默认（专用字段）：`joint_states.position` = 双臂 14 关节；位姿与夹爪分别在
+  `end_effector_poses` / `end_effector_states`
+- 全选 `joint_states`：`joint_states.position` = 14 + 位姿镜像 20 + 夹爪 2 = 36 维，
+  **云端模型输入维度需按所选通道配置**；位姿不可用（运控器禁用/未就绪）时位姿段
+  与观测一致自动省略
+- 动作侧（r2c_to_device）四元数与欧拉角仍互斥——云端回传位姿指令时只能选一种表示
 
 ### 样例 cloud-adapter：动作组往复
 

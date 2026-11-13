@@ -20,9 +20,10 @@
 # 安全提示：runtime.dry_run 默认 true（观测正常发布，动作只打日志不执行）；
 # 现场验证无误后再改为 false 真实执行。
 #
-# ★ 配置版本标记：config_rev: 2026-11-13-r1
-#   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）
-#   与 state/current 发布绑定（10Hz，collector=get_runtime）。
+# ★ 配置版本标记：config_rev: 2026-11-13-r2
+#   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）、
+#   state/current 发布绑定（10Hz，collector=get_runtime）与末端位姿/夹爪
+#   观测发布位置单选（ee_pose_channel / gripper_channel，默认专用字段）。
 #   现场核对：文件内应能搜到 "joint_names"。若与仓库最新不一致，
 #   请以仓库该文件为准，或重装包（pip install -e packages/cloudrobo-r2c）刷新
 #   安装目录内的打包副本。
@@ -56,6 +57,15 @@ hardware:
     # state/current 帧 location（"当前朝向;当前地理位置" 格式，可按需修改；
     # G01 适配器不做朝向推算，此处直接配置地理位置）
     location: "广东深圳坂田基地E3实验室"
+    # ── 末端位姿/夹爪观测发布位置（观测与 state/current 同一选择，单选互斥，
+    #    不可同时发）───────────────────────────────────────────────────
+    # ee_pose_channel: 末端位姿发到哪
+    #   end_effector_poses（默认，专用字段 names+pose）| joint_states（镜像，
+    #   left_pose_* 位置+四元数+欧拉角）
+    # gripper_channel: 末端夹爪发到哪
+    #   end_effector_states（默认，专用字段）| joint_states（镜像 left/right_gripper）
+    ee_pose_channel: "end_effector_poses"
+    gripper_channel: "end_effector_states"
     # RobotDds 初始化等待秒数（《指南》7.4：等待资源初始化，收到消息）
     init_wait_s: 0.5
     # 相机开关与启用的 G01 相机通道（《指南》9.1：head / hand_left / hand_right /
@@ -116,9 +126,12 @@ device_to_r2c:
       transforms: array_to_list
       list_mode: extend
 
-    # --- 末端位姿镜像进 joint_states（RobotController 位姿可用时追加；**同时携带四元数
-    #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示**，每侧 10 维、两侧
-    #     20 维；position 总维度 = 14 + 20 + 2 = 36，云端模型输入维度需按此配置） ---
+    # --- 末端位姿镜像进 joint_states（仅当 hardware.config.ee_pose_channel:
+    #     "joint_states" 时适配器产出 ee_pose_names/ee_poses_flat；此时
+    #     end_effector_poses 不发位姿（单选互斥）。镜像同时携带四元数
+    #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示，每侧 10 维、
+    #     两侧 20 维；joint_states.position 总维度 = 14 + 20 + 2 = 36，
+    #     云端模型输入维度需按所选通道配置） ---
     - target_key: "joint_states.names"
       source_path: "ee_pose_names"
       list_mode: extend
@@ -129,15 +142,30 @@ device_to_r2c:
       list_mode: extend
       required: false
 
-    # --- 末端夹爪镜像进 joint_states（left_gripper/right_gripper 常驻追加；
-    #     position 维度再 +2） ---
+    # --- 末端夹爪（左、右 2 通道；发布位置由 hardware.config.gripper_channel
+    #     单选（默认 end_effector_states），与 joint_states 镜像互斥不可同时发；
+    #     names/position 仅在适配器产出对应字段时赋值） ---
+    - target_key: "end_effector_states.names"
+      source_path: "ee_gripper_names"
+      required: false
+
+    - target_key: "end_effector_states.position"
+      source: "gripper_positions"
+      transforms: array_to_list
+      required: false
+
+    - target_key: "end_effector_states.force"
+      default: []
+
+    # --- 末端夹爪镜像进 joint_states（仅当 hardware.config.gripper_channel:
+    #     "joint_states" 时适配器产出以下字段，此时 end_effector_states 不发夹爪） ---
     - target_key: "joint_states.names"
-      default: ["left_gripper", "right_gripper"]
+      source_path: "joint_gripper_names"
       list_mode: extend
       required: false
 
     - target_key: "joint_states.position"
-      source: "gripper_positions"
+      source: "joint_gripper_positions"
       transforms: array_to_list
       list_mode: extend
       required: false
@@ -146,17 +174,6 @@ device_to_r2c:
       default: []
 
     - target_key: "joint_states.torque"
-      default: []
-
-    # --- 夹持器（左、右 2 通道） ---
-    - target_key: "end_effector_states.names"
-      default: ["left_gripper", "right_gripper"]
-
-    - target_key: "end_effector_states.position"
-      source: "gripper_positions"
-      transforms: array_to_list
-
-    - target_key: "end_effector_states.force"
       default: []
 
     # --- 末端位姿（get_motion_status frames，未就绪时字段缺省、自动跳过；
