@@ -3,7 +3,7 @@
 > 本文件负责 `agibot_g01` 适配器的环境配置、启动与现场验证；R2C 数据面与 CLI 的通用用法见
 > `packages/cloudrobo-r2c/docs/index.md`，字段映射细节见同目录
 > `config/robot_agibot_g01_config.yaml` 的注释。适配器接口依据
-> 《智元精灵G01+GDK v1.5.0使用指南》参考文档 RobotDds 接口与参考文档 CosineCamera 接口。
+> 《智元精灵G01+GDK 使用指南》的 RobotDds / CosineCamera 接口章节。
 
 ## 1. 环境要求
 
@@ -135,7 +135,7 @@ pip install "hw-cloudrobo-r2c[client]"
   `endpoint_role: "connect"`，同机部署连 `tcp/0.0.0.0:7447`，跨机部署用
   `--zenoh-endpoints tcp/<网关IP>:7447` 指向实际地址；`project_id` / `device_id`
   按现场部署填写（示例默认 `r2c` / `local`），与机器人端取值一致
-- RobotController 示例组（GROUP_POSE / GROUP_JOINTS8，默认注释）：取消注释并加入
+- RobotController 示例组（GROUP_POSE，默认注释）：取消注释并加入
   `GROUPS` 即可演示——`GROUP_POSE` 为**绝对位姿**（组内 `left_pose` /
   `right_pose` 直接下发，经 `--pose-channel joint_states|ee` 选择通道、
   `--pose-repr quat|euler` 选择角度表示）；`GROUP_JOINTS8` 为逐关节名
@@ -145,7 +145,7 @@ pip install "hw-cloudrobo-r2c[client]"
 # 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
 python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local \
     --steps 60 --duration 60
-# RobotController 示例组：取消 GROUP_POSE / GROUP_JOINTS8 注释并加入 GROUPS 后，
+# RobotController 示例组：取消 GROUP_POSE 注释并加入 GROUPS 后，
 # 可用 --pose-channel / --pose-repr 选择下发通道与角度表示
 ```
 
