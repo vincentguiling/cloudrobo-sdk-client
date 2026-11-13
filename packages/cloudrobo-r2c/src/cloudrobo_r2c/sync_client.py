@@ -1011,6 +1011,13 @@ class SyncRobotClient:
                 if index < len(values):
                     return values[index]
                 return values[-1]
+            # Handle Pose7D-like objects: select by index (per-step semantics)
+            if hasattr(values[0], "data") and isinstance(
+                getattr(values[0], "data", None), (list, tuple)
+            ):
+                if index < len(values):
+                    return values[index]
+                return values[-1]
             return values
 
         end_effector_poses = {
