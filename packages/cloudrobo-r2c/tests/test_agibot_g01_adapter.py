@@ -483,29 +483,40 @@ def test_actions_require_connection():
 
 
 def test_get_runtime_returns_current_state_frame():
+    """state/current 帧与 observation 的 joint_states 一致（关节/位姿/夹爪）。"""
     from cloudrobo_r2c.common.models import RunTimeMessage
+    from cloudrobo_r2c.translators.device_translator import (
+        ConfigurableDeviceTranslator,
+    )
 
     location = "广东深圳坂田基地E3实验室"
     adapter = _connect({"location": location})
+    config = _load_robot_config()
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    observation = translator.device_to_r2c(adapter.get_observation())
+
     frame = adapter.get_runtime()
     assert isinstance(frame["timestamp"], int)
     assert frame["location"] == location
     js = frame["joint_states"]
-    assert js["names"] == [
-        *(f"left_arm_joint{i}" for i in range(1, 8)),
-        *(f"right_arm_joint{i}" for i in range(1, 8)),
-        "left_gripper",
-        "right_gripper",
-    ]
-    # 双臂 14 关节取 FakeRobotDds.arm；夹爪 2 通道由 [35, 120] 归一化到 [0, 1]
-    assert js["position"][:ARM_DOF] == pytest.approx([float(i + 1) / 10 for i in range(ARM_DOF)])
-    assert js["position"][ARM_DOF:] == pytest.approx([0.25, 0.75])
+    # 与 observation 的 joint_states 完全一致：14 关节 + 位姿镜像（表示同
+    # observation：位置 + 四元数 + 欧拉角）+ 夹爪 2 通道（归一化 [0, 1]）
+    assert js["names"] == list(observation.joint_states.names)
+    assert js["position"] == pytest.approx(list(observation.joint_states.position))
+    assert len(js["position"]) == ARM_DOF + 20 + GRIPPER_DOF
+    assert js["names"][:ARM_DOF][0] == "left_arm_joint1"
+    assert js["names"][-GRIPPER_DOF:] == ["left_gripper", "right_gripper"]
+    # 位姿位置（x/y/z）来自 get_motion_status frames
+    assert js["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx([0.13, 0.89, 0.85])
+    assert js["position"][ARM_DOF + 10 : ARM_DOF + 13] == pytest.approx([0.13, -0.89, 0.85])
+    # 夹爪 [35, 120] → [0, 1]
+    assert js["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
     assert js["velocity"] == []
     assert js["torque"] == []
     # 帧 dict 可被 state/current 绑定的 proto wrapper（RunTimeMessage）接受
     message = RunTimeMessage.from_dict(frame)
     assert message.location == location
-    assert len(message.joint_states.position) == ARM_DOF + GRIPPER_DOF
+    assert len(message.joint_states.position) == len(js["position"])
 
 
 def test_get_runtime_zero_fills_failed_state_query():
@@ -513,9 +524,12 @@ def test_get_runtime_zero_fills_failed_state_query():
     robot = _last_robot()
     robot.fail_next_state_query = True
     frame = adapter.get_runtime()
-    # 双臂查询失败 → 零值回退；夹爪查询不受影响（各自独立的发布循环容错）
+    # 双臂查询失败 → 零值回退；位姿与夹爪查询不受影响
     assert frame["joint_states"]["position"][:ARM_DOF] == [0.0] * ARM_DOF
-    assert frame["joint_states"]["position"][ARM_DOF:] == pytest.approx([0.25, 0.75])
+    assert frame["joint_states"]["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
+    assert frame["joint_states"]["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx(
+        [0.13, 0.89, 0.85]
+    )
 
 
 def test_robot_config_yaml_binds_state_current_topic():
