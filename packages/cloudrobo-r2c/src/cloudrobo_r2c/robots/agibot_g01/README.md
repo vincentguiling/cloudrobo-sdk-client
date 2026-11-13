@@ -79,9 +79,10 @@ pip install "hw-cloudrobo-r2c[client]"
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
 
 state/current 发布：配置已内置 `hardware.topics` 的
-`{project_id}/{device_id}/state/current` 绑定（10Hz，`collector: get_runtime`），
-适配器 `get_runtime()` 产出双臂 14 关节 + 夹爪 2 通道（归一化 `[0, 1]`）的
-轻量帧，不触发相机取流与位姿查询。
+`{project_id}/{device_id}/state/current` 绑定（10Hz，`collector: get_runtime`）。
+发布内容与 observation 的 `joint_states` 一致（同一构造路径）：双臂 14 关节 +
+末端位姿镜像（位置 + 角度表示同 observation：四元数与欧拉角）+ 夹爪 2 通道
+（归一化 `[0, 1]`）；不取相机图像，位姿不可用时与观测一致省略位姿段。
 
 深度/鱼眼通道接入：在 `camera_group` 中加入通道名，并在 `device_to_r2c.mappings`
 仿照现有条目增加 `images.color.*`（或深度用 `images.depth.*` + `ndarray_to_png`）映射。

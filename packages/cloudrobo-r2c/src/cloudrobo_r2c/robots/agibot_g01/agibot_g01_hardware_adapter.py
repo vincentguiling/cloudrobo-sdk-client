@@ -421,39 +421,43 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
     def get_runtime(self, tick: int = 0) -> Mapping[str, Any]:
         """Collector for the state/current publish topic (CurrentState frame).
 
-        轻量状态帧：双臂 14 关节 + 夹爪 2 通道（原始量程归一化到 ``[0, 1]``，
-        与观测 ``gripper_positions`` 同语义），不触发相机取流、末端位姿与
-        头/腰/手扩展状态查询。``location`` 取 ``hardware.config.location``
-        （缺省空串）。供 ``hardware.topics`` 的
-        ``{project_id}/{device_id}/state/current`` 发布绑定调用；单个状态
-        查询失败时该段回退零值，不影响发布循环。
+        内容与 observation 的 ``joint_states`` 一致（复用同一构造路径
+        ``_fill_state`` / ``_fill_ee_poses``，不取相机图像）：
+
+        - 双臂 14 关节（``joint_positions``）；
+        - 末端位姿镜像（``ee_pose_names`` / ``ee_poses_flat``，位置 + 角度表示
+          与 observation 相同；位姿不可用时与观测一致省略该段）；
+        - 夹爪 2 通道（``[35, 120]`` 原始量程归一化到 ``[0, 1]``，与观测
+          ``gripper_positions`` 同语义）。
+
+        ``location`` 取 ``hardware.config.location``（缺省空串）。供
+        ``hardware.topics`` 的 ``{project_id}/{device_id}/state/current``
+        发布绑定调用；单个状态查询失败时沿用观测缓存/零值，不影响发布循环。
         """
         client = self._require_client()
-        arm = self._safe_state(client.arm_joint_states)
-        if arm is None:
-            arm_values = [0.0] * ARM_DOF
-        else:
-            arm_values = [
-                float(v) for v in self._normalize_dim(arm, "runtime_arm_joint_states", ARM_DOF)
-            ]
-        gripper = self._safe_state(client.gripper_states)
-        if gripper is None:
-            gripper_values = [0.0] * GRIPPER_DOF
-        else:
-            gripper = self._normalize_dim(gripper, "runtime_gripper_states", GRIPPER_DOF)
-            lo, hi = self._gripper_raw_range
-            span = hi - lo
-            scaled = (gripper - lo) / span if span > 0 else gripper
-            gripper_values = [float(v) for v in np.clip(scaled, 0.0, 1.0)]
+        source: Dict[str, Any] = {}
+        self._fill_state(source, "joint_positions", client.arm_joint_states, ARM_DOF)
+        self._fill_state(
+            source,
+            "gripper_positions",
+            client.gripper_states,
+            GRIPPER_DOF,
+            normalize_range=self._gripper_raw_range,
+        )
+        self._fill_ee_poses(source, client)
         names = [f"{side}_arm_joint{i}" for side in ("left", "right") for i in range(1, 8)]
+        names += list(source.get("ee_pose_names") or [])
         names.extend(GRIPPER_JOINT_NAMES)
+        positions = [float(v) for v in source["joint_positions"]]
+        positions += list(source.get("ee_poses_flat") or [])
+        positions += [float(v) for v in source["gripper_positions"]]
         frame: Dict[str, Any] = {
             "timestamp": int(time.time() * 1000),
             "location": str(self._config.get("location", "")),
             "joint_states": {
                 "type": [f"J{i}" for i in range(1, len(names) + 1)],
                 "names": names,
-                "position": arm_values + gripper_values,
+                "position": positions,
                 "velocity": [],
                 "torque": [],
             },
