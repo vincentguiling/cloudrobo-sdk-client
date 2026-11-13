@@ -568,7 +568,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pose-channel",
         type=str,
-        default="joint_states",
+        default="ee",
         choices=["joint_states", "ee"],
         help="Where the chapter-8 pose group sends ee poses "
         "(takes effect when a ee_pose group is enabled in GROUPS)",
