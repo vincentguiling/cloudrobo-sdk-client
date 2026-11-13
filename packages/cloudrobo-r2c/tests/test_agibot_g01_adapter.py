@@ -473,6 +473,67 @@ def test_actions_require_connection():
         adapter.get_observation()
     with pytest.raises(RuntimeError, match="not connected"):
         adapter.send_action({"arm_cmd_joint_pos": [0.0] * ARM_DOF})
+    with pytest.raises(RuntimeError, match="not connected"):
+        adapter.get_runtime()
+
+
+# ---------------------------------------------------------------------------
+# state/current 发布绑定（get_runtime collector）
+# ---------------------------------------------------------------------------
+
+
+def test_get_runtime_returns_current_state_frame():
+    from cloudrobo_r2c.common.models import RunTimeMessage
+
+    location = "广东深圳坂田基地E3实验室"
+    adapter = _connect({"location": location})
+    frame = adapter.get_runtime()
+    assert isinstance(frame["timestamp"], int)
+    assert frame["location"] == location
+    js = frame["joint_states"]
+    assert js["names"] == [
+        *(f"left_arm_joint{i}" for i in range(1, 8)),
+        *(f"right_arm_joint{i}" for i in range(1, 8)),
+        "left_gripper",
+        "right_gripper",
+    ]
+    # 双臂 14 关节取 FakeRobotDds.arm；夹爪 2 通道由 [35, 120] 归一化到 [0, 1]
+    assert js["position"][:ARM_DOF] == pytest.approx([float(i + 1) / 10 for i in range(ARM_DOF)])
+    assert js["position"][ARM_DOF:] == pytest.approx([0.25, 0.75])
+    assert js["velocity"] == []
+    assert js["torque"] == []
+    # 帧 dict 可被 state/current 绑定的 proto wrapper（RunTimeMessage）接受
+    message = RunTimeMessage.from_dict(frame)
+    assert message.location == location
+    assert len(message.joint_states.position) == ARM_DOF + GRIPPER_DOF
+
+
+def test_get_runtime_zero_fills_failed_state_query():
+    adapter = _connect()
+    robot = _last_robot()
+    robot.fail_next_state_query = True
+    frame = adapter.get_runtime()
+    # 双臂查询失败 → 零值回退；夹爪查询不受影响（各自独立的发布循环容错）
+    assert frame["joint_states"]["position"][:ARM_DOF] == [0.0] * ARM_DOF
+    assert frame["joint_states"]["position"][ARM_DOF:] == pytest.approx([0.25, 0.75])
+
+
+def test_robot_config_yaml_binds_state_current_topic():
+    config = _load_robot_config()
+    topics = (config.get("hardware") or {}).get("topics") or {}
+    binding = topics.get("{project_id}/{device_id}/state/current")
+    assert binding, "shipped config must bind state/current"
+    assert binding["direction"] == "publish"
+    assert binding["rate_hz"] == 10
+    assert binding["collector"] == "get_runtime"
+    assert binding["proto"] == "cloudrobo_r2c.common.models:RunTimeMessage"
+    assert config["hardware"]["config"].get("location") == "广东深圳坂田基地E3实验室"
+    # 绑定可被真实解析器接受（proto 名、collector 名等校验）
+    from cloudrobo_r2c.client.topic_config import parse_topic_bindings
+
+    bindings = parse_topic_bindings(topics)
+    assert len(bindings) == 1
+    assert bindings[0].rate_hz == 10
 
 
 # ---------------------------------------------------------------------------

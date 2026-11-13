@@ -414,6 +414,52 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._last_observation = observation
         return observation
 
+    # ------------------------------------------------------------------
+    # state/current（RunTimeMessage 帧）
+    # ------------------------------------------------------------------
+
+    def get_runtime(self, tick: int = 0) -> Mapping[str, Any]:
+        """Collector for the state/current publish topic (CurrentState frame).
+
+        轻量状态帧：双臂 14 关节 + 夹爪 2 通道（原始量程归一化到 ``[0, 1]``，
+        与观测 ``gripper_positions`` 同语义），不触发相机取流、末端位姿与
+        头/腰/手扩展状态查询。``location`` 取 ``hardware.config.location``
+        （缺省空串）。供 ``hardware.topics`` 的
+        ``{project_id}/{device_id}/state/current`` 发布绑定调用；单个状态
+        查询失败时该段回退零值，不影响发布循环。
+        """
+        client = self._require_client()
+        arm = self._safe_state(client.arm_joint_states)
+        if arm is None:
+            arm_values = [0.0] * ARM_DOF
+        else:
+            arm_values = [
+                float(v) for v in self._normalize_dim(arm, "runtime_arm_joint_states", ARM_DOF)
+            ]
+        gripper = self._safe_state(client.gripper_states)
+        if gripper is None:
+            gripper_values = [0.0] * GRIPPER_DOF
+        else:
+            gripper = self._normalize_dim(gripper, "runtime_gripper_states", GRIPPER_DOF)
+            lo, hi = self._gripper_raw_range
+            span = hi - lo
+            scaled = (gripper - lo) / span if span > 0 else gripper
+            gripper_values = [float(v) for v in np.clip(scaled, 0.0, 1.0)]
+        names = [f"{side}_arm_joint{i}" for side in ("left", "right") for i in range(1, 8)]
+        names.extend(GRIPPER_JOINT_NAMES)
+        frame: Dict[str, Any] = {
+            "timestamp": int(time.time() * 1000),
+            "location": str(self._config.get("location", "")),
+            "joint_states": {
+                "type": [f"J{i}" for i in range(1, len(names) + 1)],
+                "names": names,
+                "position": arm_values + gripper_values,
+                "velocity": [],
+                "torque": [],
+            },
+        }
+        return frame
+
     def _fill_state(
         self,
         observation: Dict[str, Any],

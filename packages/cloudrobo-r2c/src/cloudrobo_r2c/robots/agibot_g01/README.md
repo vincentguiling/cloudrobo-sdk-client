@@ -75,7 +75,13 @@ pip install "hw-cloudrobo-r2c[client]"
 | `control_lifetime_s` | 1.0 | RobotController 位姿/关节指令有效时间（秒），超时未收到下一帧则停止 |
 | `pose_control_group` | ["left_arm", "right_arm"] | 位姿控制部位（`set_end_effector_pose_control` 的 control_group） |
 | `dry_run` | false | 适配器级干运行：只打印动作不执行 |
+| `location` | "" | `state/current` 帧 `location` 字段（`hardware.config.location`，按现场填写） |
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
+
+state/current 发布：配置已内置 `hardware.topics` 的
+`{project_id}/{device_id}/state/current` 绑定（10Hz，`collector: get_runtime`），
+适配器 `get_runtime()` 产出双臂 14 关节 + 夹爪 2 通道（归一化 `[0, 1]`）的
+轻量帧，不触发相机取流与位姿查询。
 
 深度/鱼眼通道接入：在 `camera_group` 中加入通道名，并在 `device_to_r2c.mappings`
 仿照现有条目增加 `images.color.*`（或深度用 `images.depth.*` + `ndarray_to_png`）映射。
@@ -165,6 +171,7 @@ cloudrobo r2c client \
   明确报错并指向本文件第 2 节。
 - 云端能收到观测（关节数值随姿态变化；相机首帧可能为空——`CosineCamera` 首帧返回
   `None`，取流线程会自动过滤，稍等即有图像）。
+- 云端能收到 `state/current`（日志出现 `publishing .../state/current @ 10.0Hz`）。
 - 下发动作仅出现在 `[AgiBotG01][DRY_RUN]` 日志中。
 
 ```bash
