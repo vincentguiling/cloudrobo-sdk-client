@@ -4,8 +4,8 @@
 使硬件适配器在没有机器人或 GDK 环境的机器上仍然可测试。
 
 接口依据《智元精灵G01+GDK v1.5.0使用指南》：
-- 第 7 章 ``python 函数 RobotDds 接口使用``（手臂/手部/头部/腰部/轮子）
-- 第 9 章 ``python 函数 CosineCamera 接口使用``（相机图像）
+- ``python 函数 RobotDds 接口使用``（手臂/手部/头部/腰部/轮子）
+- ``python 函数 CosineCamera 接口使用``（相机图像）
 
 注意事项（来自《指南》）：
 - 状态查询函数返回 ``(数据, 时间戳)``，时间戳单位为纳秒
@@ -66,17 +66,17 @@ class AgiBotG01Client:
 
     接口范围（《指南》）：
 
-    - 第 7 章 ``RobotDds``：状态查询原样转发 ``(数据, 时间戳)``；关节空间运动控制
+    - ``RobotDds``：状态查询原样转发 ``(数据, 时间戳)``；关节空间运动控制
       ``move_arm`` / ``move_gripper`` / ``move_hand`` / ``move_head`` / ``move_waist``
       / ``move_wheel`` / ``reset``
-    - 第 8 章 ``RobotController``：末端绝对位姿 ``set_end_effector_pose_control`` 与
+    - ``RobotController``：末端绝对位姿 ``set_end_effector_pose_control`` 与
       关节绝对位置控制 ``set_joint_position_control``（由适配器按 ``joint_states.names``
       路由调用）
-    - 第 9 章 ``CosineCamera``：后台取流线程，``get_camera_images()`` 返回最近一帧
+    - ``CosineCamera``：后台取流线程，``get_camera_images()`` 返回最近一帧
       非空图像缓存（G01 通道名 → ndarray）
 
     ``a2d_sdk`` 未安装时 ``connect()`` 抛出带部署指引的 ``RuntimeError``；
-    ``RobotController`` 创建失败仅停用第 8 章能力，不影响第 7 章关节控制。
+    ``RobotController`` 创建失败仅停用RobotController 能力，不影响RobotDds 关节控制。
     """
 
     def __init__(
@@ -150,7 +150,7 @@ class AgiBotG01Client:
                     # 《指南》8.2.2：RobotController() 提供（异步）运动控制接口
                     self._motion_controller = _RobotController()
                 except Exception as exc:
-                    # 运控器创建失败不阻断第 7 章关节控制链路，只停用第 8 章能力
+                    # 运控器创建失败不阻断RobotDds 关节控制链路，只停用RobotController 能力
                     self._motion_controller = None
                     logger.warning(
                         "RobotController init failed; chapter-8 pose/joint control " "disabled: %s",
@@ -268,13 +268,14 @@ class AgiBotG01Client:
             self._require_robot().reset(**targets)
 
     # ------------------------------------------------------------------
-    # 第 8 章 RobotController（末端绝对位姿 / 关节绝对位置控制）
+    # RobotController（末端绝对位姿 / 关节绝对位置控制）
     # ------------------------------------------------------------------
 
     def _require_motion_controller(self) -> Any:
         if self._motion_controller is None:
             raise RuntimeError(
-                "RobotController 不可用（初始化失败或被禁用），" "第 8 章末端位姿/关节控制不可用"
+                "RobotController 不可用（初始化失败或被禁用），"
+                "RobotController 末端位姿/关节控制不可用"
             )
         return self._motion_controller
 
