@@ -1,17 +1,17 @@
 # AgiBot G01（智元精灵 G01）机器人配置
 #
 # 硬件适配器：cloudrobo_r2c.robots.agibot_g01（GDK RobotDds + CosineCamera + RobotController）
-# 接口依据《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）、第 8 章（RobotController）
-# 与第 9 章（CosineCamera）。
+# 接口依据《智元精灵G01+GDK v1.5.0使用指南》（RobotDds）、（RobotController）
+# 与（CosineCamera）。
 #
 # 前置条件（《指南》第 2 章）：
 # 1. PC 与 G01 同网段，按《指南》部署 GDK 环境（cd a2d_sdk && source env.sh）
 # 2. 机器人处于 Copilot 模式（robot-service -s -c ./conf/copilot.pbtxt）
 # 3. 语义约定：角度一律弧度；腰部高度单位厘米；夹持器 [0,1] 归一化或 [35,120] 原始值
-# 4. 控制路由：云端动作按 joint_states.names 区分——双臂关节名走第 7 章 move_arm；
-#    names 含 left_pose/right_pose（position 按 7 维位姿）走第 8 章末端位姿
+# 4. 控制路由：云端动作按 joint_states.names 区分——双臂关节名走move_arm；
+#    names 含 left_pose/right_pose（position 按 7 维位姿）走末端位姿
 #    （joint_states 位姿优先于 end_effector_poses.pose）；names 均为部位组名
-#    （left_arm/right_arm 等，position 按每组 7 关节）走第 8 章关节控制
+#    （left_arm/right_arm 等，position 按每组 7 关节）走RobotController 关节控制
 #
 # 启动示例：
 #   cloudrobo r2c client --bundle <cert_config_*.zip> \
@@ -56,9 +56,9 @@ hardware:
       hand_right: "cam_right_wrist"
     # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
     # camera_poll_interval_s: 0.03
-    # 第 8 章 RobotController（末端位姿/关节控制；创建失败自动降级为仅第 7 章关节控制）
+    # RobotController（末端位姿/关节控制；创建失败自动降级为仅RobotDds 关节控制）
     # enable_motion_controller: true
-    # control_lifetime_s: 1.0         # 第 8 章位姿/关节指令有效时间（秒）
+    # control_lifetime_s: 1.0         # RobotController 位姿/关节指令有效时间（秒）
     # pose_control_group: ["left_arm", "right_arm"]
     # ee_pose_repr: "quat"            # joint_states 位姿镜像的角度表示：
     #                                 #   quat（left_pose_x/y/z/rx/ry/rz/rw）
@@ -103,7 +103,7 @@ device_to_r2c:
       transforms: array_to_list
       list_mode: extend
 
-    # --- 末端位姿镜像进 joint_states（第 8 章位姿可用时追加；**同时携带四元数
+    # --- 末端位姿镜像进 joint_states（RobotController 位姿可用时追加；**同时携带四元数
     #     （rx/ry/rz/rw）与欧拉角（roll/pitch/yaw）两种表示**，每侧 10 维、两侧
     #     20 维；position 总维度 = 14 + 20 + 2 = 36，云端模型输入维度需按此配置） ---
     - target_key: "joint_states.names"
@@ -146,7 +146,7 @@ device_to_r2c:
     - target_key: "end_effector_states.force"
       default: []
 
-    # --- 末端位姿（第 8 章 get_motion_status frames，未就绪时字段缺省、自动跳过；
+    # --- 末端位姿（get_motion_status frames，未就绪时字段缺省、自动跳过；
     #     names 与 pose 从 ee_poses_data 整体赋值，避免部分触发生成不完整 dict） ---
     - target_key: "end_effector_poses"
       source_path: "ee_poses_data"
@@ -196,10 +196,10 @@ device_to_r2c:
 r2c_to_device:
   mappings:
     # joint_states.names → 路由依据：适配器逐维解析 names 区分第 7/8 章控制：
-    # left_arm_joint_N/right_arm_joint_N → 第 7 章 move_arm（按名回填）；
+    # left_arm_joint_N/right_arm_joint_N → move_arm（按名回填）；
     # left_pose_x/y/z + rx/ry/rz/rw（四元数）或 roll/pitch/yaw（欧拉角，ZYX）
-    # → 第 8 章末端位姿；left_gripper/right_gripper → move_gripper；
-    # 全部为部位组名（left_arm/right_arm 等，每组 7 关节）→ 第 8 章关节控制
+    # → 末端位姿；left_gripper/right_gripper → move_gripper；
+    # 全部为部位组名（left_arm/right_arm 等，每组 7 关节）→ RobotController 关节控制
     - target: "joint_names"
       source: "joint_states.names"
       use_assign_dotted: false

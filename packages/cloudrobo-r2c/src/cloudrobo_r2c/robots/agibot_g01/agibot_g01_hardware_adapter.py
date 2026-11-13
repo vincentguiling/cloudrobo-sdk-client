@@ -3,7 +3,7 @@
 基于智元 GDK Python SDK（``a2d_sdk``）实现
 :class:`~cloudrobo_r2c.core.interfaces.IRobotHardwareAdapter`，接口依据
 《智元精灵G01+GDK v1.5.0使用指南》RobotDds（RobotDds）、RobotController（RobotController）
-与第 9 章（CosineCamera）。
+与参考文档 CosineCamera 接口。
 
 **RobotDds / RobotController控制按 ``joint_states.names`` 逐维区分**（云端动作的 names 决定路由，
 互斥与完整性校验不通过时拒绝执行整条动作）：
@@ -138,7 +138,7 @@ JOINT_GROUP_NAMES = frozenset(
     }
 )
 
-# 末端位姿逐维 names（《指南》8.1 位姿 dict 分量）：
+# 末端位姿逐维 names（《指南》RobotController 位姿 dict 分量）：
 # 四元数表示：left_pose_x/y/z/rx/ry/rz/rw；欧拉角表示：left_pose_x/y/z/roll/pitch/yaw
 _POSE_DIM_QUAT = ("x", "y", "z", "rx", "ry", "rz", "rw")
 _POSE_DIM_EULER = ("x", "y", "z", "roll", "pitch", "yaw")
@@ -271,9 +271,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         # RobotController绝对位姿/关节控制在默认伺服模式下工作（《指南》8.1 mode=2 专为
         # trajectory_tracking_control 设计，不适用于 set_joint_position_control
         # 或 set_end_effector_pose_control）。不自动切换运动模式。
-        self._auto_motion_control_mode = bool(
-            self._config.get("auto_motion_control_mode", False)
-        )
+        self._auto_motion_control_mode = bool(self._config.get("auto_motion_control_mode", False))
         self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
         self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 1))  # servo
         self._active_motion_mode: Optional[int] = None
@@ -789,7 +787,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         """
         has_pose = bool(parsed["poses"]["left"] or parsed["poses"]["right"])
         has_joint = bool(parsed["joints"])
-        
+
         has_groups = bool(parsed["groups"])
         has_gripper = bool(parsed["gripper"])
         ee_pose_present = "left_pose_cmd_ee" in command or "right_pose_cmd_ee" in command
@@ -804,7 +802,10 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
 
         # RobotDds与RobotController关节名不得混用
         if False:
-            return "RobotDds（left_arm_joint_N）与RobotController（left_arm_jointN）关节名混用，" "拒绝执行"
+            return (
+                "RobotDds（left_arm_joint_N）与RobotController（left_arm_jointN）关节名混用，"
+                "拒绝执行"
+            )
 
         # 四元数与欧拉角互斥（逐侧并跨侧一致）
         if has_pose:
@@ -927,8 +928,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         poses_by_side: Dict[str, Dict[str, float]],
         command: Mapping[str, Any],
     ) -> List[str]:
-        """RobotController末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。
-        """
+        """RobotController末端位姿：joint_states 位姿优先，缺省侧回退 end_effector_poses。"""
         left = self._pose_from_dims(poses_by_side.get("left"), "left")
         right = self._pose_from_dims(poses_by_side.get("right"), "right")
         # joint_states 位姿存在时优先；否则回退 end_effector_poses 通道

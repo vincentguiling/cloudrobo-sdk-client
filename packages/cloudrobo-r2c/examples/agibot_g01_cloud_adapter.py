@@ -1,14 +1,14 @@
 """AgiBot G01 样例 cloud-adapter：在多组动作之间来回运动。
 
 配合机器人端 ``config/robot_agibot_g01_config.yaml`` 使用。动作组由
-``GROUPS`` dict 数组驱动（默认三组为《指南》第 7 章 ``RobotDds`` 关节空间动作，
+``GROUPS`` dict 数组驱动（默认三组为《指南》RobotDds 关节空间动作，
 真机调试采集的目标值）：
 
 - **夹爪任意角度 + 全程插值**：关节、位姿、夹爪均从当前值线性/球面插值到目标
   （chunk size = 2 × publish_hz，每组执行约 2 秒），避免目标跳变超过
   0.2618 rad（15°）限幅；欧拉角由连续 SLERP 四元数逐步转换，天然避免过圈
 
-**第 8 章示例组**——按 ``joint_states.names`` 路由，演示第 8 章新增能力
+**RobotController 示例组**——按 ``joint_states.names`` 路由，演示RobotController 能力
 （默认注释，取消注释并加入 ``GROUPS`` 即可启用；机器人端建议先保持
 ``dry_run: true`` 观察一轮）：
 
@@ -20,9 +20,9 @@
   转换为四元数；ee 通道为四元数原生格式）。注意：关节与末端互斥，ee 通道时
   joint_states 仅携带夹爪分量
 - ``GROUP_JOINTS8`` ``ch8_joints(组名关节)``：names = ``left_arm_joint1..7`` /
-  ``right_arm_joint1..7``（逐关节名，不带下划线，与第 7 章
+  ``right_arm_joint1..7``（逐关节名，不带下划线，与
   ``left_arm_joint_1`` 区分），position 按名对应 → ``set_joint_position_control``
-- 第 8 章示例组同样**全程插值**：位姿从观测当前末端位姿 SLERP/线性插值到目标
+- RobotController 示例组同样**全程插值**：位姿从观测当前末端位姿 SLERP/线性插值到目标
   （欧拉角由连续四元数转换，避免过圈），夹爪从当前角度线性插值
 
 连接约定（client config）：zenohd 与网关监听 ``tcp/0.0.0.0:7447``（所有网卡），
@@ -82,7 +82,7 @@ POSE_DOF = 7  # 末端位姿维度 [x, y, z, qx, qy, qz, qw]（《指南》8.1�
 # chunk size 一般为 2 倍 publish_hz（每组动作执行约 2 秒）
 INTERP_STEPS = int(2 * PUBLISH_HZ)
 
-# 第 8 章位姿的两种角度表示对应的逐维 names（《指南》8.1 位姿 dict 分量）
+# RobotController 位姿的两种角度表示对应的逐维 names（《指南》RobotController 位姿 dict 分量）
 _POSE_DIM_QUAT = ("x", "y", "z", "rx", "ry", "rz", "rw")
 _POSE_DIM_EULER = ("x", "y", "z", "roll", "pitch", "yaw")
 
@@ -121,7 +121,7 @@ def _pack_ext(values: Sequence[float]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # 动作组定义（GROUPS dict 数组驱动循环；现场请按机器人实际位姿/限位调整目标值）
-# 需要演示第 8 章能力时，把下方注释掉的 GROUP_POSE / GROUP_JOINTS8 取消注释
+# 需要演示RobotController 能力时，把下方注释掉的 GROUP_POSE / GROUP_JOINTS8 取消注释
 # 并加入 GROUPS 即可（机器人端建议先保持 dry_run: true 观察一轮）。
 # ---------------------------------------------------------------------------
 
@@ -173,7 +173,7 @@ GROUP_B = {
     "gripper": [0.85, 0.35],  # 左右夹爪各自任意角度
 }
 
-# 组 2：全身姿态组 —— 手臂 + 头部 + 腰部一起到达新姿态（第 7 章"整体姿态"语义）
+# 组 2：全身姿态组 —— 手臂 + 头部 + 腰部一起到达新姿态（"整体姿态"语义）
 GROUP_C = {
     "name": "joint_c",
     "kind": "joints",
@@ -200,11 +200,11 @@ GROUP_C = {
 }
 
 # ---------------------------------------------------------------------------
-# 第 8 章示例组（默认注释）：绝对位姿控制 + 逐关节名关节控制。
+# RobotController 示例组（默认注释）：绝对位姿控制 + 逐关节名关节控制。
 # 启用方式：取消注释并加入上方 GROUPS（机器人端建议先 dry_run: true 观察一轮）。
 # ---------------------------------------------------------------------------
 
-# 组 3：第 8 章绝对位姿控制 —— 直接下发组内配置的绝对位姿目标
+# 组 3：RobotController 绝对位姿控制 —— 直接下发组内配置的绝对位姿目标
 # （left_pose / right_pose，四元数 [x,y,z,qx,qy,qz,qw]，示例值请按实际
 # 工作空间修改）→ set_end_effector_pose_control；
 # 下发通道（joint_states 逐维 names / end_effector_poses 通道）与角度表示
@@ -213,29 +213,77 @@ GROUP_C = {
 GROUP_POSE_A = {
     "name": "pose_a",
     "kind": "ch8_pose",
-    "left_pose": [0.45006241859210033, 0.34431358357149866, 1.0250712982705688, 0.11851912989635048, 0.6617943563342805, -0.6437205892683082, 0.3655205175154617],
-    "right_pose": [0.4481309242140103, -0.3455449250377566, 1.0226385863602234, -0.6659388881998952, -0.12370331875302967, -0.3598052659951305, 0.6416876628662489],
+    "left_pose": [
+        0.45006241859210033,
+        0.34431358357149866,
+        1.0250712982705688,
+        0.11851912989635048,
+        0.6617943563342805,
+        -0.6437205892683082,
+        0.3655205175154617,
+    ],
+    "right_pose": [
+        0.4481309242140103,
+        -0.3455449250377566,
+        1.0226385863602234,
+        -0.6659388881998952,
+        -0.12370331875302967,
+        -0.3598052659951305,
+        0.6416876628662489,
+    ],
     "gripper": [0.15, 0.15],  # 任意角度示例：连续小数值
 }
 
 GROUP_POSE_B = {
     "name": "pose_b",
     "kind": "ch8_pose",
-    "left_pose": [0.5611145574115394, 0.3495781601430047, 0.9123099740561661, -0.17598895478827695, 0.7176661351289048, -0.6213503621605349, 0.26058958867277127],
-    "right_pose": [0.6232183220557429, -0.33249048248106317, 0.8358008430530386, -0.7042824424802003, 0.20426697521212137, -0.19497309627621, 0.6513422570202883],
+    "left_pose": [
+        0.5611145574115394,
+        0.3495781601430047,
+        0.9123099740561661,
+        -0.17598895478827695,
+        0.7176661351289048,
+        -0.6213503621605349,
+        0.26058958867277127,
+    ],
+    "right_pose": [
+        0.6232183220557429,
+        -0.33249048248106317,
+        0.8358008430530386,
+        -0.7042824424802003,
+        0.20426697521212137,
+        -0.19497309627621,
+        0.6513422570202883,
+    ],
     "gripper": [0.85, 0.35],  # 左右夹爪各自任意角度
 }
 
 GROUP_POSE_C = {
     "name": "pose_c",
     "kind": "ch8_pose",
-    "left_pose": [0.6288965282652418, 0.2685209032041983, 0.6765217856706166, -0.3253912559574555, 0.8011512160219603, -0.42610807372558773, 0.2659119574574157],
-    "right_pose": [0.6266538045332843, -0.3946180613613208, 0.7136673588427458, -0.6826061460872149, 0.450260658643223, -0.1251719789206316, 0.5618239620158841],
+    "left_pose": [
+        0.6288965282652418,
+        0.2685209032041983,
+        0.6765217856706166,
+        -0.3253912559574555,
+        0.8011512160219603,
+        -0.42610807372558773,
+        0.2659119574574157,
+    ],
+    "right_pose": [
+        0.6266538045332843,
+        -0.3946180613613208,
+        0.7136673588427458,
+        -0.6826061460872149,
+        0.450260658643223,
+        -0.1251719789206316,
+        0.5618239620158841,
+    ],
     "gripper": [0.5, 0.8],
 }
 
-# # 组 4：第 8 章关节控制 —— names = left_arm_joint1..7 / right_arm_joint1..7
-# # （逐关节名，不带下划线，与第 7 章 left_arm_joint_1 区分），关节目标复用
+# # 组 4：RobotController 关节控制 —— names = left_arm_joint1..7 / right_arm_joint1..7
+# # （逐关节名，不带下划线，与left_arm_joint1 区分），关节目标复用
 # # GROUP_C 真机值 → set_joint_position_control
 GROUP_JOINTS8_JOINT_A = {
     "name": "ch8_joint_a",
@@ -307,7 +355,16 @@ GROUP_JOINTS8_JOINT_C = {
 }
 
 # 参与往复循环的动作组（dict 数组）
-GROUPS: List[Dict[str, Any]] = [GROUP_A, GROUP_B, GROUP_C, GROUP_POSE_B, GROUP_POSE_A, GROUP_JOINTS8_JOINT_B, GROUP_JOINTS8_JOINT_C]
+GROUPS: List[Dict[str, Any]] = [
+    GROUP_A,
+    GROUP_B,
+    GROUP_C,
+    GROUP_POSE_B,
+    GROUP_POSE_A,
+    GROUP_JOINTS8_JOINT_B,
+    GROUP_JOINTS8_JOINT_C,
+]
+
 
 def _ping_pong_sequence(count: int) -> List[int]:
     """生成往复序列：n=3 → [0, 1, 2, 1]；n=4 → [0, 1, 2, 3, 2, 1]。"""
@@ -356,7 +413,7 @@ class ActionGroupCycler:
             return self._build_ch8_joints(now_ms, group, current_gripper, current_joints)
         return self._build_joint_action(now_ms, group, current_joints, current_gripper)
 
-    # -- 第 7 章关节组（现有主链路） ----------------------------------------------
+    # -- RobotDds 关节组（现有主链路） ----------------------------------------------
 
     def _build_joint_action(
         self,
@@ -427,7 +484,7 @@ class ActionGroupCycler:
         )
         return Actions.from_dict(payload)
 
-    # -- 第 8 章示例组（绝对位姿 / 逐关节名关节） ----------------------------------
+    # -- RobotController 示例组（绝对位姿 / 逐关节名关节） ----------------------------------
 
     @staticmethod
     def _quat_slerp(q0: Sequence[float], q1: Sequence[float], t: float) -> List[float]:
@@ -460,7 +517,7 @@ class ActionGroupCycler:
         current_gripper: Optional[Sequence[float]],
         current_poses: Optional[Dict[str, Sequence[float]]],
     ) -> Actions:
-        """第 8 章绝对位姿控制示例（通道/表示由配置选择，全程插值）。
+        """RobotController 绝对位姿控制示例（通道/表示由配置选择，全程插值）。
 
         - 目标位姿 = 组内配置的 ``left_pose`` / ``right_pose``（四元数
           ``[x,y,z,qx,qy,qz,qw]`` 绝对位姿）
@@ -573,7 +630,7 @@ class ActionGroupCycler:
         current_gripper: Optional[Sequence[float]],
         current_joints: Optional[Sequence[float]],
     ) -> Actions:
-        """第 8 章关节控制示例（names=left_arm_joint1..7/right_arm_joint1..7，
+        """RobotController 关节控制示例（names=left_arm_joint1..7/right_arm_joint1..7，
         逐关节名与 position 一一对应 → set_joint_position_control）。
         关节从当前角度线性插值到目标（避免单步跳变超限）。"""
         target = np.asarray(group["joints"], dtype=float)
@@ -602,7 +659,7 @@ class ActionGroupCycler:
             "timestamp": now_ms,
             "chunk_size": self._steps,
             "joint_states": {
-                "names": names,  # 逐关节名（不带下划线）→ 第 8 章关节控制
+                "names": names,  # 逐关节名（不带下划线）→ RobotController 关节控制
                 "position": joint_chunk,
                 "velocity": [],
                 "torque": [],

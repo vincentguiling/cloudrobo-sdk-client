@@ -3,7 +3,7 @@
 > 本文件负责 `agibot_g01` 适配器的环境配置、启动与现场验证；R2C 数据面与 CLI 的通用用法见
 > `packages/cloudrobo-r2c/docs/index.md`，字段映射细节见同目录
 > `config/robot_agibot_g01_config.yaml` 的注释。适配器接口依据
-> 《智元精灵G01+GDK v1.5.0使用指南》第 7 章（RobotDds）与第 9 章（CosineCamera）。
+> 《智元精灵G01+GDK v1.5.0使用指南》参考文档 RobotDds 接口与参考文档 CosineCamera 接口。
 
 ## 1. 环境要求
 
@@ -71,8 +71,8 @@ pip install "hw-cloudrobo-r2c[client]"
 | `camera_group` | head / hand_left / hand_right | 启用的 G01 相机通道（`head_depth`、`*_fisheye` 等可扩展） |
 | `camera_key_map` | head→cam_high、hand_left→cam_left_wrist、hand_right→cam_right_wrist | G01 通道名 → R2C 图像键 |
 | `camera_poll_interval_s` | 0.03 | 取流轮询间隔（≈30Hz） |
-| `enable_motion_controller` | true | 启用 `RobotController`（《指南》8 章）：末端位姿/关节控制；创建失败自动降级为仅第 7 章关节控制 |
-| `control_lifetime_s` | 1.0 | 第 8 章位姿/关节指令有效时间（秒），超时未收到下一帧则停止 |
+| `enable_motion_controller` | true | 启用 `RobotController`（《指南》RobotController 接口节）：末端位姿/关节控制；创建失败自动降级为仅RobotDds 关节控制 |
+| `control_lifetime_s` | 1.0 | RobotController 位姿/关节指令有效时间（秒），超时未收到下一帧则停止 |
 | `pose_control_group` | ["left_arm", "right_arm"] | 位姿控制部位（`set_end_effector_pose_control` 的 control_group） |
 | `dry_run` | false | 适配器级干运行：只打印动作不执行 |
 | `commands.go_home` | 全零示例位姿 | GDK `reset()` 复位目标，现场按需修改 |
@@ -102,7 +102,7 @@ pip install "hw-cloudrobo-r2c[client]"
   `end_effector_poses` 通道下发的位姿）
 - 末端位姿双通道互斥：位姿同时出现在 `joint_states` 与 `end_effector_poses` → 拒绝
 - 四元数与欧拉角互斥：同一动作内不得混用两种表示（左右侧之间也须一致）
-- 第 7 章（`left_arm_joint_N`）与第 8 章（`left_arm_jointN`）关节名不得混用
+- 关节名须统一为 left_arm_jointN 格式
 - 不全不硬执行：关节须 14 维齐全、每组关节须 7 维、位姿各侧分量须完整、
   夹爪须两侧同时出现，否则拒绝执行
 - 未知 names 视为协议不一致，拒绝执行
@@ -122,7 +122,7 @@ pip install "hw-cloudrobo-r2c[client]"
 ### 样例 cloud-adapter：动作组往复
 
 `examples/agibot_g01_cloud_adapter.py` 演示云端在 `GROUPS` dict 数组定义的动作组
-之间来回下发（默认三组为真机调试采集的第 7 章关节动作）：
+之间来回下发（默认三组为真机调试采集的RobotDds 关节动作）：
 
 - **关节/位姿/夹爪全程插值**：从当前值线性插值到目标（位姿为平移线性 +
   四元数 SLERP，欧拉角由连续四元数逐步转换，天然避免过圈），
@@ -135,7 +135,7 @@ pip install "hw-cloudrobo-r2c[client]"
   `endpoint_role: "connect"`，同机部署连 `tcp/0.0.0.0:7447`，跨机部署用
   `--zenoh-endpoints tcp/<网关IP>:7447` 指向实际地址；`project_id` / `device_id`
   按现场部署填写（示例默认 `r2c` / `local`），与机器人端取值一致
-- 第 8 章示例组（GROUP_POSE / GROUP_JOINTS8，默认注释）：取消注释并加入
+- RobotController 示例组（GROUP_POSE / GROUP_JOINTS8，默认注释）：取消注释并加入
   `GROUPS` 即可演示——`GROUP_POSE` 为**绝对位姿**（组内 `left_pose` /
   `right_pose` 直接下发，经 `--pose-channel joint_states|ee` 选择通道、
   `--pose-repr quat|euler` 选择角度表示）；`GROUP_JOINTS8` 为逐关节名
@@ -145,7 +145,7 @@ pip install "hw-cloudrobo-r2c[client]"
 # 云端侧（与机器人端 r2c client 同网段；建议机器人端先 dry_run: true）
 python examples/agibot_g01_cloud_adapter.py --project-id r2c --device-id local \
     --steps 60 --duration 60
-# 第 8 章示例组：取消 GROUP_POSE / GROUP_JOINTS8 注释并加入 GROUPS 后，
+# RobotController 示例组：取消 GROUP_POSE / GROUP_JOINTS8 注释并加入 GROUPS 后，
 # 可用 --pose-channel / --pose-repr 选择下发通道与角度表示
 ```
 
