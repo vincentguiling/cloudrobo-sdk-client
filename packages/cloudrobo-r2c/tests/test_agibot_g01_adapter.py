@@ -31,7 +31,7 @@ class FakeRobotDds:
         type(self).instances.append(self)
         self.calls: List[tuple] = []
         self.arm = [float(i + 1) / 10 for i in range(14)]
-        self.gripper = [0.25, 0.75]
+        self.gripper = [56.25, 98.75]  # GDK 原始量程 [35, 120]，归一化后 ≈ [0.25, 0.75]
         self.hand = [0.0] * 12
         self.head = [0.1, -0.2]
         self.waist = [0.05, 30.0]

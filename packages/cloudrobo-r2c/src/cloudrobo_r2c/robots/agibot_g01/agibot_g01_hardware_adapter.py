@@ -276,6 +276,10 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
         self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 2))  # planning
         self._active_motion_mode: Optional[int] = None
+        # 夹爪原始量程（《指南》7.2.1：[35, 120]），观测侧归一化到 [0, 1]；
+        # move_gripper 同时接受 [0,1] 归一化与 [35,120] 原始值，动作侧无需反向转换
+        gr = self._config.get("gripper_raw_range", [35.0, 120.0])
+        self._gripper_raw_range = [float(gr[0]), float(gr[1])]
 
         self._client: Optional[AgiBotG01Client] = None
         self._connected = False
@@ -366,7 +370,13 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         }
 
         self._fill_state(observation, "joint_positions", client.arm_joint_states, ARM_DOF)
-        self._fill_state(observation, "gripper_positions", client.gripper_states, GRIPPER_DOF)
+        self._fill_state(
+            observation,
+            "gripper_positions",
+            client.gripper_states,
+            GRIPPER_DOF,
+            normalize_range=self._gripper_raw_range,
+        )
         # 头/腰/手经 extensions 以 FLOAT32 打包，观测数组统一使用 float32
         self._fill_state(
             observation,
@@ -407,14 +417,25 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         getter: Any,
         size: int,
         dtype: type = np.float64,
+        normalize_range: Optional[List[float]] = None,
     ) -> None:
-        """读取 ``(数据, 时间戳)`` 型状态并写入观测，失败时回退上次值/零值。"""
+        """读取 ``(数据, 时间戳)`` 型状态并写入观测，失败时回退上次值/零值。
+
+        ``normalize_range`` 非空时将原始值线性归一化到 ``[0, 1]``（如夹爪
+        ``[35, 120]`` → ``[0, 1]``）。
+        """
         values = self._safe_state(getter)
         if values is None:
             cached = self._last_observation.get(key)
             observation[key] = cached if cached is not None else np.zeros(size, dtype=dtype)
             return
-        observation[key] = self._normalize_dim(values, key, size).astype(dtype)
+        result = self._normalize_dim(values, key, size).astype(dtype)
+        if normalize_range is not None:
+            lo, hi = normalize_range
+            span = hi - lo
+            if span > 0:
+                result = ((result - lo) / span).clip(0.0, 1.0).astype(dtype)
+        observation[key] = result
 
     def _fill_body_pose(self, observation: Dict[str, Any], getter: Any) -> None:
         """整体姿态关节状态（《指南》7.1.1，返回 list 无时间戳）。"""
@@ -485,6 +506,11 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 mirror_values += [roll, pitch, yaw]
             observation["ee_pose_names"] = mirror_names
             observation["ee_poses_flat"] = mirror_values
+            observation["ee_pose_group_names"] = [
+                name
+                for name, pose in (("left", left), ("right", right))
+                if pose is not None
+            ]
 
     @staticmethod
     def _frame_to_pose7d(frame: Any) -> Optional[List[float]]:
