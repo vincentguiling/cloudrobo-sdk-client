@@ -717,40 +717,13 @@ def test_route_joints8_per_joint_names():
     assert joint_group["left_arm"] == pytest.approx(left_group)
     assert joint_group["right_arm"] == pytest.approx(right_group)
     assert not any(c[0] == "move_arm" for c in _last_robot().calls)
-    # 第 8 章下发前自动切 planning 模式
-    assert controller.motion_mode_calls == [2]
-
-
-def test_motion_mode_switches_between_ch7_and_ch8():
-    # 第 7 章(servo=1) ↔ 第 8 章(planning=2) 切换时自动 set_motion_control_mode
-    adapter = _connect()
-    pose_names = _pose_dim_names("left") + _pose_dim_names("right")
-    adapter.send_action({"joint_names": pose_names, "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE})
-    controller = _last_controller()
-    assert controller.motion_mode_calls == [2]
-    # 切回第 7 章：下发 servo 模式
-    adapter.send_action(
-        {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
-            + [f"right_arm_joint_{i}" for i in range(1, 8)],
-            "arm_cmd_joint_pos": [0.1] * ARM_DOF,
-        }
-    )
-    assert controller.motion_mode_calls == [2, 1]
-    # 同章节重复下发不再重复切换
-    adapter.send_action(
-        {
-            "joint_names": [f"left_arm_joint_{i}" for i in range(1, 8)]
-            + [f"right_arm_joint_{i}" for i in range(1, 8)],
-            "arm_cmd_joint_pos": [0.1] * ARM_DOF,
-        }
-    )
-    assert controller.motion_mode_calls == [2, 1]
+    # 默认不自动切换运动模式（mode=2 仅适用 trajectory_tracking）
+    assert controller.motion_mode_calls == []
 
 
 def test_motion_mode_auto_disabled():
-    # auto_motion_control_mode: false → 不自动切换模式
-    adapter = _connect({"auto_motion_control_mode": False})
+    # auto_motion_control_mode 默认 False → 不自动切换模式
+    adapter = _connect()
     pose_names = _pose_dim_names("left") + _pose_dim_names("right")
     adapter.send_action({"joint_names": pose_names, "arm_cmd_joint_pos": LEFT_POSE + RIGHT_POSE})
     assert _last_controller().motion_mode_calls == []
@@ -1052,6 +1025,7 @@ _CH8_POSE_GROUP = {
     "kind": "ch8_pose",
     "left_pose": LEFT_POSE,
     "right_pose": RIGHT_POSE,
+    "gripper": [0.3, 0.3],
 }
 _CH8_JOINTS8_GROUP = {
     "name": "ch8_joints(组名关节)",
