@@ -270,11 +270,14 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         self._pose_control_group = list(
             self._config.get("pose_control_group", ["left_arm", "right_arm"])
         )
-        # 第 8 章绝对位姿/关节控制需 planning 模式；第 7 章 move_arm 为伺服跟随。
-        # 路由在第 7/8 章之间切换时自动 set_motion_control_mode（可配置关闭）。
-        self._auto_motion_control_mode = bool(self._config.get("auto_motion_control_mode", True))
+        # 第 8 章绝对位姿/关节控制在默认伺服模式下工作（《指南》8.1 mode=2 专为
+        # trajectory_tracking_control 设计，不适用于 set_joint_position_control
+        # 或 set_end_effector_pose_control）。不自动切换运动模式。
+        self._auto_motion_control_mode = bool(
+            self._config.get("auto_motion_control_mode", False)
+        )
         self._ch7_motion_mode = int(self._config.get("ch7_motion_mode", 1))  # servo
-        self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 2))  # planning
+        self._ch8_motion_mode = int(self._config.get("ch8_motion_mode", 1))  # servo
         self._active_motion_mode: Optional[int] = None
         # 夹爪原始量程（《指南》7.2.1：[35, 120]），观测侧归一化到 [0, 1]；
         # move_gripper 同时接受 [0,1] 归一化与 [35,120] 原始值，动作侧无需反向转换
