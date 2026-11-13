@@ -147,13 +147,9 @@ device_to_r2c:
       default: []
 
     # --- 末端位姿（第 8 章 get_motion_status frames，未就绪时字段缺省、自动跳过；
-    #     names 与 pose 均从 ee_poses / ee_pose_names 镜像，无位姿时同为空） ---
-    - target_key: "end_effector_poses.names"
-      source_path: "ee_pose_group_names"
-      required: false
-
-    - target_key: "end_effector_poses.pose"
-      source_path: "ee_poses"
+    #     names 与 pose 从 ee_poses_data 整体赋值，避免部分触发生成不完整 dict） ---
+    - target_key: "end_effector_poses"
+      source_path: "ee_poses_data"
       required: false
 
     # --- 相机（色彩通道；深度通道可仿照增加 images.depth.* 映射） ---

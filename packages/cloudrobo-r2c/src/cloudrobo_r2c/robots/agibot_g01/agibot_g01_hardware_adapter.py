@@ -506,10 +506,16 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 mirror_values += [roll, pitch, yaw]
             observation["ee_pose_names"] = mirror_names
             observation["ee_poses_flat"] = mirror_values
+            # 供 device_to_r2c 一次性映射到 end_effector_poses（names + pose 整体，
+            # 避免拆分多条规则导致部分触发时生成不完整 dict）
+            observation["ee_poses_data"] = {
+                "names": [
+                    name for name, pose in (("left", left), ("right", right)) if pose is not None
+                ],
+                "pose": [list(pose) for pose in ee_poses],
+            }
             observation["ee_pose_group_names"] = [
-                name
-                for name, pose in (("left", left), ("right", right))
-                if pose is not None
+                name for name, pose in (("left", left), ("right", right)) if pose is not None
             ]
 
     @staticmethod
