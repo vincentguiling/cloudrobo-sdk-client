@@ -684,7 +684,6 @@ def main() -> None:
             now_ms=int(time.time() * 1000),
             current_joints=current["joints"],
             current_gripper=current["gripper"],
-            current_poses=current["poses"],
         )
         client.publish_actions(action)
 
