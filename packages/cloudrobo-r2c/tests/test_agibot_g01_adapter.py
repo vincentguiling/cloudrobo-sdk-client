@@ -1021,22 +1021,22 @@ def _demo_observation():
 
 # 第 8 章示例组（与样例中注释掉的 GROUP_POSE / GROUP_JOINTS8 同构）
 _CH8_POSE_GROUP = {
-    "name": "ch8_pose(绝对位姿)",
-    "kind": "ch8_pose",
+    "name": "ee_pose(绝对位姿)",
+    "kind": "ee_pose",
     "left_pose": LEFT_POSE,
     "right_pose": RIGHT_POSE,
     "gripper": [0.3, 0.3],
 }
 _CH8_JOINTS8_GROUP = {
-    "name": "ch8_joints(组名关节)",
-    "kind": "ch8_joints",
+    "name": "joint_position(组名关节)",
+    "kind": "joint_position",
     "joints": [0.2] * ARM_DOF,
     "gripper": [0.5, 0.8],
 }
 
 
-def test_example_ch8_pose_group_joint_states_channel():
-    """ch8_pose 组：绝对位姿经 joint_states 逐维 names（四元数）+ 夹爪。"""
+def test_example_ee_pose_group_joint_states_channel():
+    """ee_pose 组：绝对位姿经 joint_states 逐维 names（四元数）+ 夹爪。"""
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(
         groups=[dict(_CH8_POSE_GROUP)],
@@ -1058,8 +1058,8 @@ def test_example_ch8_pose_group_joint_states_channel():
     assert a.end_effector_poses == {}
 
 
-def test_example_ch8_pose_group_ee_channel_and_euler_repr():
-    """ch8_pose 组：--pose-channel ee --pose-repr euler。
+def test_example_ee_pose_group_ee_channel_and_euler_repr():
+    """ee_pose 组：--pose-channel ee --pose-repr euler。
 
     关节与末端互斥 → joint_states 仅携带夹爪分量；ee 通道为四元数原生格式
     （欧拉角在云端先转换为四元数）。
@@ -1080,8 +1080,8 @@ def test_example_ch8_pose_group_ee_channel_and_euler_repr():
     assert list(a.end_effector_poses["right"].pose[0]) == pytest.approx(RIGHT_POSE)
 
 
-def test_example_ch8_joints_group_per_joint_names():
-    """ch8_joints 组：left_arm_joint1..7 / right_arm_joint1..7 逐关节名。"""
+def test_example_joint_position_group_per_joint_names():
+    """joint_position 组：left_arm_joint1..7 / right_arm_joint1..7 逐关节名。"""
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(
         groups=[dict(_CH8_JOINTS8_GROUP)],
@@ -1130,13 +1130,13 @@ def test_example_cycler_cycles_groups_ping_pong():
     assert a1.end_effector_states.position[0] == pytest.approx([0.15, 0.15])
 
 
-def test_example_ch8_pose_interp_joint_states_channel():
-    """ch8_pose 组（joint_states 通道）：位姿全程插值（平移线性 + SLERP）。"""
+def test_example_ee_pose_interp_joint_states_channel():
+    """ee_pose 组（joint_states 通道）：位姿全程插值（平移线性 + SLERP）。"""
     demo = _load_example_module()
     target_left = [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0]
     group_pose = {
-        "name": "ch8_pose(绝对位姿)",
-        "kind": "ch8_pose",
+        "name": "ee_pose(绝对位姿)",
+        "kind": "ee_pose",
         "left_pose": target_left,
         "right_pose": [0.3, 0.0, 0.3, 0.0, 0.0, 0.0, 1.0],
     }
@@ -1159,8 +1159,8 @@ def test_example_ch8_pose_interp_joint_states_channel():
     assert a.joint_states.position[-1][:7] == pytest.approx(target_left)
 
 
-def test_example_ch8_joints_group_interpolates():
-    """ch8_joints 组：关节与夹爪均从当前值线性插值到目标。"""
+def test_example_joint_position_group_interpolates():
+    """joint_position 组：关节与夹爪均从当前值线性插值到目标。"""
     demo = _load_example_module()
     cycler = demo.ActionGroupCycler(groups=[dict(_CH8_JOINTS8_GROUP)], steps=5)
     current = demo._extract_current(_demo_observation())

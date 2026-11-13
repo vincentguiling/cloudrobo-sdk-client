@@ -12,14 +12,14 @@
 （默认注释，取消注释并加入 ``GROUPS`` 即可启用；机器人端建议先保持
 ``dry_run: true`` 观察一轮）：
 
-- ``GROUP_POSE`` ``ch8_pose(绝对位姿)``：**绝对位姿控制**——直接下发组内配置的
+- ``GROUP_POSE`` ``ee_pose(绝对位姿)``：**绝对位姿控制**——直接下发组内配置的
   ``left_pose`` / ``right_pose``（四元数 ``[x,y,z,qx,qy,qz,qw]`` 绝对位姿，
   现场按实际工作空间修改）→ ``set_end_effector_pose_control``；下发通道与角度
   表示由 ``--pose-channel joint_states|ee`` 与 ``--pose-repr quat|euler`` 配置
   （欧拉角为 ``left_pose_x/y/z/roll/pitch/yaw`` 逐维 names，ZYX，机器人端内部
   转换为四元数；ee 通道为四元数原生格式）。注意：关节与末端互斥，ee 通道时
   joint_states 仅携带夹爪分量
-- ``GROUP_JOINTS8`` ``ch8_joints(组名关节)``：names = ``left_arm_joint1..7`` /
+- ``GROUP_JOINTS8`` ``joint_position(组名关节)``：names = ``left_arm_joint1..7`` /
   ``right_arm_joint1..7``（逐关节名，不带下划线，与
   ``left_arm_joint_1`` 区分），position 按名对应 → ``set_joint_position_control``
 - RobotController 示例组同样**全程插值**：位姿从观测当前末端位姿 SLERP/线性插值到目标
@@ -212,7 +212,7 @@ GROUP_C = {
 # 注意：关节与末端互斥 —— ee 通道时 joint_states 仅携带夹爪分量。
 GROUP_POSE_A = {
     "name": "pose_a",
-    "kind": "ch8_pose",
+    "kind": "ee_pose",
     "left_pose": [
         0.45006241859210033,
         0.34431358357149866,
@@ -236,7 +236,7 @@ GROUP_POSE_A = {
 
 GROUP_POSE_B = {
     "name": "pose_b",
-    "kind": "ch8_pose",
+    "kind": "ee_pose",
     "left_pose": [
         0.5611145574115394,
         0.3495781601430047,
@@ -260,7 +260,7 @@ GROUP_POSE_B = {
 
 GROUP_POSE_C = {
     "name": "pose_c",
-    "kind": "ch8_pose",
+    "kind": "ee_pose",
     "left_pose": [
         0.6288965282652418,
         0.2685209032041983,
@@ -287,7 +287,7 @@ GROUP_POSE_C = {
 # # GROUP_C 真机值 → set_joint_position_control
 GROUP_JOINTS8_JOINT_A = {
     "name": "ch8_joint_a",
-    "kind": "ch8_joints",
+    "kind": "joint_position",
     "joints": [
         -1.125699520111084,
         0.5228543281555176,
@@ -308,7 +308,7 @@ GROUP_JOINTS8_JOINT_A = {
 }
 GROUP_JOINTS8_JOINT_B = {
     "name": "ch8_joint_b",
-    "kind": "ch8_joints",
+    "kind": "joint_position",
     "joints": [
         -1.187420129776001,
         0.5014432072639465,
@@ -331,7 +331,7 @@ GROUP_JOINTS8_JOINT_B = {
 }
 GROUP_JOINTS8_JOINT_C = {
     "name": "ch8_joint_c",
-    "kind": "ch8_joints",
+    "kind": "joint_position",
     "joints": [
         -1.1872631311416626,
         0.7889842987060547,
@@ -407,10 +407,10 @@ class ActionGroupCycler:
         group = self._groups[self.next_group_index()]
         kind = group.get("kind", "joints")
 
-        if kind == "ch8_pose":
-            return self._build_ch8_pose(now_ms, group, current_gripper, current_poses)
-        if kind == "ch8_joints":
-            return self._build_ch8_joints(now_ms, group, current_gripper, current_joints)
+        if kind == "ee_pose":
+            return self._build_ee_pose(now_ms, group, current_gripper, current_poses)
+        if kind == "joint_position":
+            return self._build_joint_position(now_ms, group, current_gripper, current_joints)
         return self._build_joint_action(now_ms, group, current_joints, current_gripper)
 
     # -- RobotDds 关节组（现有主链路） ----------------------------------------------
@@ -510,7 +510,7 @@ class ActionGroupCycler:
         trans = [s + (g - s) * t for s, g in zip(start[:3], target[:3])]
         return trans + ActionGroupCycler._quat_slerp(start[3:7], target[3:7], t)
 
-    def _build_ch8_pose(
+    def _build_ee_pose(
         self,
         now_ms: int,
         group: Dict[str, Any],
@@ -623,7 +623,7 @@ class ActionGroupCycler:
         )
         return Actions.from_dict(payload)
 
-    def _build_ch8_joints(
+    def _build_joint_position(
         self,
         now_ms: int,
         group: Dict[str, Any],
@@ -689,7 +689,7 @@ class ActionGroupCycler:
 
 def parse_args() -> argparse.Namespace:
     parser = build_parser(
-        description="AgiBot G01 cloud adapter demo: cycle between action groups (ch7/ch8 routing)",
+        description="AgiBot G01 cloud adapter demo: cycle between action groups (joint/ee routing)",
         default_project_id=DEFAULT_PROJECT_ID,
         default_device_id=DEFAULT_DEVICE_ID,
         default_client_id=DEFAULT_CLIENT_ID,
@@ -710,7 +710,7 @@ def parse_args() -> argparse.Namespace:
         default="joint_states",
         choices=["joint_states", "ee"],
         help="Where the chapter-8 pose group sends ee poses "
-        "(takes effect when a ch8_pose group is enabled in GROUPS)",
+        "(takes effect when a ee_pose group is enabled in GROUPS)",
     )
     parser.add_argument(
         "--pose-repr",
