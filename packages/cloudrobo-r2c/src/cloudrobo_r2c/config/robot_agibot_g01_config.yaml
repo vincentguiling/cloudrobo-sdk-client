@@ -20,8 +20,9 @@
 # 安全提示：runtime.dry_run 默认 true（观测正常发布，动作只打日志不执行）；
 # 现场验证无误后再改为 false 真实执行。
 #
-# ★ 配置版本标记：config_rev: 2026-11-11-r2
-#   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）。
+# ★ 配置版本标记：config_rev: 2026-11-13-r1
+#   含第 7/8 章路由（r2c_to_device 的 joint_names / left|right_pose_cmd_ee）
+#   与 state/current 发布绑定（10Hz，collector=get_runtime）。
 #   现场核对：文件内应能搜到 "joint_names"。若与仓库最新不一致，
 #   请以仓库该文件为准，或重装包（pip install -e packages/cloudrobo-r2c）刷新
 #   安装目录内的打包副本。
@@ -42,7 +43,19 @@ runtime:
 
 hardware:
   type: "agibot_g01"
+  # ── state/current 发布绑定（runtime.current_state 废止，会话级周期
+  #    上报一并移除；轻量接入改走 hardware.topics 绑定，collector 为
+  #    adapter.get_runtime）───────────────────────────────────────────
+  topics:
+    "{project_id}/{device_id}/state/current":
+      proto: "cloudrobo_r2c.common.models:RunTimeMessage"
+      direction: "publish"
+      rate_hz: 10                    # 状态发布频率（10Hz）
+      collector: "get_runtime"
   config:
+    # state/current 帧 location（"当前朝向;当前地理位置" 格式，可按需修改；
+    # G01 适配器不做朝向推算，此处直接配置地理位置）
+    location: "广东深圳坂田基地E3实验室"
     # RobotDds 初始化等待秒数（《指南》7.4：等待资源初始化，收到消息）
     init_wait_s: 0.5
     # 相机开关与启用的 G01 相机通道（《指南》9.1：head / hand_left / hand_right /
