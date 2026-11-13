@@ -183,6 +183,7 @@ from cloudrobo_r2c.robots.agibot_g01 import agibot_g01_client  # noqa: E402
 from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (  # noqa: E402
     ARM_DOF,
     GRIPPER_DOF,
+    POSE_DOF,
     AgiBotG01HardwareAdapter,
     create_agibot_g01_adapter,
 )
@@ -366,25 +367,51 @@ def test_observation_ee_pose_mirror_in_joint_states_mode():
     """ee_pose_channel: joint_states 时位姿镜像字段在、专用字段数据源不在。"""
     adapter = _connect({"ee_pose_channel": "joint_states"})
     obs = adapter.get_observation()
-    # 镜像进 joint_states 所需的逐维 names（四元数 + 欧拉角两种表示同时携带）
-    assert obs["ee_pose_names"] == (
-        _pose_dim_names("left", "quat")
-        + _pose_dim_names("left", "euler")[3:]
-        + _pose_dim_names("right", "quat")
-        + _pose_dim_names("right", "euler")[3:]
+    # 默认 ee_pose_repr: quat —— 镜像为单表示（每侧 7 维四元数），不再双表示
+    assert obs["ee_pose_names"] == _pose_dim_names("left") + _pose_dim_names("right")
+    assert obs["ee_poses_flat"][:7] == pytest.approx(obs["left_ee_pose"])
+    assert obs["ee_poses_flat"][7:14] == pytest.approx(obs["right_ee_pose"])
+    # 单选互斥：专用字段数据源不再产出
+    assert "ee_poses_data" not in obs
+
+
+def test_observation_ee_pose_euler_repr():
+    """ee_pose_repr: euler 对 end_effector_poses（默认通道）生效：pose 6 维 ZYX。"""
+    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
+        _quat_to_euler_rpy,
     )
+
+    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
+    adapter = _connect({"ee_pose_repr": "euler"})
+    obs = adapter.get_observation()
+    # 专用字段 pose 转为 [x, y, z, roll, pitch, yaw]（raw left_ee_pose 仍为 quat）
+    pose = obs["ee_poses_data"]["pose"][0]
+    assert pose[:3] == pytest.approx([0.13, 0.89, 0.85])
+    assert pose[3:6] == pytest.approx(list(left_rpy))
+    assert len(pose) == 6
+    assert obs["ee_poses_data"]["names"] == ["left", "right"]
+    assert "ee_pose_names" not in obs
+
+
+def test_observation_ee_pose_mirror_euler_repr():
+    """ee_pose_repr: euler + ee_pose_channel: joint_states → 欧拉角单表示镜像。"""
     from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
         _quat_to_euler_rpy,
     )
 
     left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
     right_rpy = _quat_to_euler_rpy(0.0, -0.7071, 0.7071, 0.0)
-    assert obs["ee_poses_flat"][:7] == pytest.approx(obs["left_ee_pose"])
-    assert obs["ee_poses_flat"][7:10] == pytest.approx(left_rpy)
-    assert obs["ee_poses_flat"][10:17] == pytest.approx(obs["right_ee_pose"])
-    assert obs["ee_poses_flat"][17:20] == pytest.approx(right_rpy)
-    # 单选互斥：专用字段数据源不再产出
-    assert "ee_poses_data" not in obs
+    adapter = _connect({"ee_pose_channel": "joint_states", "ee_pose_repr": "euler"})
+    obs = adapter.get_observation()
+    assert obs["ee_pose_names"] == (
+        _pose_dim_names("left", "euler") + _pose_dim_names("right", "euler")
+    )
+    # 每侧 [x, y, z, roll, pitch, yaw] 6 维
+    assert obs["ee_poses_flat"][0:3] == pytest.approx([0.13, 0.89, 0.85])
+    assert obs["ee_poses_flat"][3:6] == pytest.approx(list(left_rpy))
+    assert obs["ee_poses_flat"][6:9] == pytest.approx([0.13, -0.89, 0.85])
+    assert obs["ee_poses_flat"][9:12] == pytest.approx(list(right_rpy))
+    assert len(obs["ee_poses_flat"]) == 12
 
 
 def test_observation_gripper_channel_joint_states_mode():
@@ -402,6 +429,8 @@ def test_invalid_channel_config_rejected():
         create_agibot_g01_adapter({"ee_pose_channel": "both"})
     with pytest.raises(ValueError, match="gripper_channel"):
         create_agibot_g01_adapter({"gripper_channel": "both"})
+    with pytest.raises(ValueError, match="ee_pose_repr"):
+        create_agibot_g01_adapter({"ee_pose_repr": "both"})
 
 
 def test_observation_ee_poses_absent_without_motion_status():
@@ -578,14 +607,43 @@ def test_get_runtime_joint_states_mode_matches_observation():
     js = frame["joint_states"]
     assert js["names"] == list(observation.joint_states.names)
     assert js["position"] == pytest.approx(list(observation.joint_states.position))
-    # 14 关节 + 位姿镜像（quat 7 + euler 3 每侧） + 夹爪 2 = 36
-    assert len(js["position"]) == ARM_DOF + 20 + GRIPPER_DOF
+    # 14 关节 + 位姿镜像（默认 quat：每侧 7 维） + 夹爪 2 = 30
+    assert len(js["position"]) == ARM_DOF + 2 * POSE_DOF + GRIPPER_DOF
     assert js["names"][:ARM_DOF][0] == "left_arm_joint1"
     assert js["position"][ARM_DOF : ARM_DOF + 3] == pytest.approx([0.13, 0.89, 0.85])
     assert js["position"][-GRIPPER_DOF:] == pytest.approx([0.25, 0.75])
     # 单选互斥：专用字段不再出现在帧里
     assert "end_effector_states" not in frame
     assert "end_effector_poses" not in frame
+
+
+def test_get_runtime_euler_repr_matches_observation():
+    """ee_pose_repr: euler 对 get_runtime 与 observation 同步生效（euler pose 6 维）。"""
+    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
+        _quat_to_euler_rpy,
+    )
+    from cloudrobo_r2c.translators.device_translator import (
+        ConfigurableDeviceTranslator,
+    )
+
+    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
+    adapter = _connect({"ee_pose_repr": "euler"})
+    config = _load_robot_config()
+    config["hardware"]["config"]["ee_pose_repr"] = "euler"
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    observation = translator.device_to_r2c(adapter.get_observation())
+
+    frame = adapter.get_runtime()
+    # end_effector_poses 段与 observation 一致（euler 6 维）
+    assert frame["end_effector_poses"]["pose"][0][:3] == pytest.approx([0.13, 0.89, 0.85])
+    assert frame["end_effector_poses"]["pose"][0][3:6] == pytest.approx(list(left_rpy))
+    assert len(frame["end_effector_poses"]["pose"][0]) == 6
+    assert len(frame["end_effector_poses"]["pose"][0]) == len(
+        list(observation.end_effector_poses.pose[0])
+    )
+    assert frame["joint_states"]["position"] == pytest.approx(
+        list(observation.joint_states.position)
+    )
 
 
 def test_get_runtime_zero_fills_failed_state_query():
@@ -614,6 +672,8 @@ def test_robot_config_yaml_binds_state_current_topic():
     # 发布位置单选默认值：专用字段（end_effector_poses / end_effector_states）
     assert config["hardware"]["config"].get("ee_pose_channel") == "end_effector_poses"
     assert config["hardware"]["config"].get("gripper_channel") == "end_effector_states"
+    # 角度表示默认值：quat（对 ee_pose_channel 两种取值都生效）
+    assert config["hardware"]["config"].get("ee_pose_repr") == "quat"
     # 绑定可被真实解析器接受（proto 名、collector 名等校验）
     from cloudrobo_r2c.client.topic_config import parse_topic_bindings
 
@@ -623,7 +683,7 @@ def test_robot_config_yaml_binds_state_current_topic():
 
 
 def test_robot_config_yaml_joint_states_channel_mode():
-    """ee_pose_channel/gripper_channel 均选 joint_states 时端到端镜像 36 维。"""
+    """ee_pose_channel/gripper_channel 均选 joint_states 时端到端镜像（quat 30 维）。"""
     from cloudrobo_r2c.translators.device_translator import (
         ConfigurableDeviceTranslator,
     )
@@ -634,8 +694,8 @@ def test_robot_config_yaml_joint_states_channel_mode():
     translator = ConfigurableDeviceTranslator.from_config(config)
     adapter = _connect({"ee_pose_channel": "joint_states", "gripper_channel": "joint_states"})
     observation = translator.device_to_r2c(adapter.get_observation())
-    # joint_states：14 关节 + 位姿镜像（quat 7 + euler 3 每侧） + 夹爪 2 = 36
-    assert len(observation.joint_states.position) == ARM_DOF + 20 + GRIPPER_DOF
+    # joint_states：14 关节 + 位姿镜像（默认 quat，每侧 7 维） + 夹爪 2 = 30
+    assert len(observation.joint_states.position) == ARM_DOF + 2 * POSE_DOF + GRIPPER_DOF
     assert observation.joint_states.names[:ARM_DOF][0] == "left_arm_joint1"
     assert list(observation.joint_states.names[ARM_DOF : ARM_DOF + 7]) == _pose_dim_names("left")
     assert list(observation.joint_states.names[-GRIPPER_DOF:]) == [
@@ -649,6 +709,29 @@ def test_robot_config_yaml_joint_states_channel_mode():
     # 单选互斥：专用字段不再发布位姿/夹爪内容
     assert len(observation.end_effector_states.position) == 0
     assert len(observation.end_effector_poses.pose) == 0
+
+
+def test_robot_config_yaml_euler_repr_end_effector_poses():
+    """ee_pose_repr: euler 对默认通道（end_effector_poses）生效：pose 6 维。"""
+    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
+        _quat_to_euler_rpy,
+    )
+    from cloudrobo_r2c.translators.device_translator import (
+        ConfigurableDeviceTranslator,
+    )
+
+    left_rpy = _quat_to_euler_rpy(-0.7071, 0.0, 0.0, 0.7071)
+    config = _load_robot_config()
+    config["hardware"]["config"]["ee_pose_repr"] = "euler"
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    adapter = _connect({"ee_pose_repr": "euler"})
+    observation = translator.device_to_r2c(adapter.get_observation())
+    # end_effector_poses.pose 每行 [x, y, z, roll, pitch, yaw]；joint_states 仍 14 关节
+    assert len(observation.joint_states.position) == ARM_DOF
+    assert len(observation.end_effector_poses.pose) == 2
+    assert observation.end_effector_poses.pose[0][:3] == pytest.approx([0.13, 0.89, 0.85])
+    assert observation.end_effector_poses.pose[0][3:6] == pytest.approx(list(left_rpy))
+    assert len(observation.end_effector_poses.pose[0]) == 6
 
 
 # ---------------------------------------------------------------------------
@@ -911,6 +994,37 @@ def test_route_pose_fallback_to_ee_channel():
         {"x": 0.2, "y": 0.0, "z": 0.3, "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0}
     )
     assert right_pose is not None
+
+
+def test_route_ee_channel_accepts_euler_pose():
+    """ee 通道按长度识别：6 维 euler（ZYX）内部转 quat 下发，与观测 euler 输出闭环。"""
+    from cloudrobo_r2c.robots.agibot_g01.agibot_g01_hardware_adapter import (
+        _euler_rpy_to_quat,
+    )
+
+    adapter = _connect()
+    roll, pitch, yaw = 0.1, -0.2, 0.3
+    qx, qy, qz, qw = _euler_rpy_to_quat(roll, pitch, yaw)
+    adapter.send_action(
+        {
+            "left_pose_cmd_ee": [0.2, 0.0, 0.3, roll, pitch, yaw],
+            "right_pose_cmd_ee": [0.2, 0.0, 0.3, roll, pitch, yaw],
+        }
+    )
+    _, _, left_pose, right_pose = _last_controller().pose_calls[0]
+    assert left_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": qx, "qy": qy, "qz": qz, "qw": qw}
+    )
+    assert right_pose == pytest.approx(
+        {"x": 0.2, "y": 0.0, "z": 0.3, "qx": qx, "qy": qy, "qz": qz, "qw": qw}
+    )
+
+
+def test_route_ee_channel_rejects_wrong_dims():
+    """ee 通道维度既非 7（quat）也非 6（euler）→ 该侧跳过，不调用 GDK。"""
+    adapter = _connect()
+    adapter.send_action({"left_pose_cmd_ee": [0.2, 0.0, 0.3]})
+    assert _last_controller().pose_calls == []
 
 
 def test_route_reject_joint_and_ee_pose_together():
