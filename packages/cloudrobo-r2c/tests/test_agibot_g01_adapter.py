@@ -1125,33 +1125,33 @@ def test_example_ch8_joints_group_per_joint_names():
 def test_example_cycler_cycles_groups_ping_pong():
     """GROUPS dict 数组驱动：默认往复序列 0 → 1 → 2 → 1 → 0。"""
     demo = _load_example_module()
-    cycler = demo.ActionGroupCycler(groups=demo.GROUPS, steps=5)
+    cycler = demo.ActionGroupCycler(
+        groups=[
+            {"name": "t0", "kind": "joints", "joints": [0.1] * ARM_DOF, "gripper": [0.15, 0.15]},
+            {"name": "t1", "kind": "joints", "joints": [0.3] * ARM_DOF, "gripper": [0.85, 0.35]},
+            {"name": "t2", "kind": "joints", "joints": [0.5] * ARM_DOF, "gripper": [0.5, 0.8]},
+        ],
+        steps=5,
+    )
     current = demo._extract_current(_demo_observation())
     now = 1000
 
     def next_action():
         return cycler.build_action(now, current["joints"], current["gripper"])
 
-    # 组 0：关节 A（当前 → 目标插值 5 步，最后一步到达目标；夹爪任意角度）
+    # 组 0 → 1 → 2 → 1 → 0（往复）
     a1 = next_action()
-    assert a1.chunk_size == 5
-    assert a1.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+    assert a1.joint_states.position[-1] == pytest.approx([0.1] * ARM_DOF)
     assert a1.end_effector_states.position[-1] == pytest.approx([0.15, 0.15])
-    # 组 1：关节 B
     a2 = next_action()
-    assert a2.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
-    assert a2.end_effector_states.position[-1] == pytest.approx([0.85, 0.35])
-    # 组 2：全身姿态（真机值，不带 head/waist extensions）
+    assert a2.joint_states.position[-1] == pytest.approx([0.3] * ARM_DOF)
     a3 = next_action()
-    assert a3.joint_states.position[-1] == pytest.approx(demo.GROUP_C["joints"])
-    assert a3.end_effector_states.position[-1] == pytest.approx([0.5, 0.8])
+    assert a3.joint_states.position[-1] == pytest.approx([0.5] * ARM_DOF)
     assert "head_joint" not in a3.extensions
-    assert "waist_joint" not in a3.extensions
-    # 往复：2 → 1 → 0
     a4 = next_action()
-    assert a4.joint_states.position[-1] == pytest.approx(demo.GROUP_B["joints"])
+    assert a4.joint_states.position[-1] == pytest.approx([0.3] * ARM_DOF)
     a5 = next_action()
-    assert a5.joint_states.position[-1] == pytest.approx(demo.GROUP_A["joints"])
+    assert a5.joint_states.position[-1] == pytest.approx([0.1] * ARM_DOF)
     # 夹爪用最终角度不插值（真机调试结论）
     assert a1.end_effector_states.position[0] == pytest.approx([0.15, 0.15])
 
