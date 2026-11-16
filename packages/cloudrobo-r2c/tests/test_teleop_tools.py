@@ -344,3 +344,102 @@ def test_pb2_direct_reference_still_resolves():
         TeleopFrame.from_dict({"timestamp": 42, "operator_id": "pb2-direct"}).serialize()
     )
     assert view.to_dict()["operator_id"] == "pb2-direct"
+
+
+# ── teleop_to_device：TeleopFrame → 设备侧平铺字段 ───────────────────
+
+
+def test_teleop_to_device_poses_and_single_side_trigger():
+    from cloudrobo_r2c.translators import teleop_to_device
+
+    frame = TeleopFrame.from_protobuf(TeleopFrame.from_dict(ACTION_DATA).serialize())
+    command = teleop_to_device(frame)
+    assert command["left_pose_cmd_ee"] == pytest.approx([0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0])
+    assert command["right_pose_cmd_ee"] == pytest.approx([0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 1.0])
+    # ACTION_DATA 仅左手触发（右手未按 grip）：无 current_gripper 时跳过夹爪
+    assert "gripper_cmd_pos" not in command
+    assert "teleop_command" not in command
+    # 传入设备当前夹爪值后补齐缺失侧（右手保持 current）
+    command = teleop_to_device(frame, current_gripper=[0.3, 0.4])
+    assert command["gripper_cmd_pos"] == pytest.approx([0.7, 0.4])
+
+
+def test_teleop_to_device_both_side_triggers():
+    from cloudrobo_r2c.translators import teleop_to_device
+
+    frame = TeleopFrame.from_dict(
+        {
+            "timestamp": 1,
+            "end_effector_states": {"names": ["left", "right"], "position": [0.2, 0.8]},
+        }
+    )
+    command = teleop_to_device(frame)
+    assert command["gripper_cmd_pos"] == pytest.approx([0.2, 0.8])
+
+
+def test_teleop_to_device_command_frame_no_device_action():
+    from cloudrobo_r2c.translators import teleop_to_device
+
+    start = TeleopFrame.from_dict({"timestamp": 1, "start": {}})
+    assert teleop_to_device(start) == {"teleop_command": "start"}
+
+
+def test_teleop_to_device_joint_states_and_empty_frame():
+    from cloudrobo_r2c.translators import teleop_to_device
+
+    frame = TeleopFrame.from_dict(
+        {"timestamp": 1, "joint_states": {"names": ["j1"], "position": [0.1]}}
+    )
+    command = teleop_to_device(frame)
+    assert command["joint_names"] == ["j1"]
+    assert command["arm_cmd_joint_pos"] == [0.1]
+    # 空帧（无动作、无命令）：不产生设备动作
+    assert teleop_to_device(TeleopFrame.from_dict({"timestamp": 1})) == {}
+
+
+# ── session teleop 收发（publish/subscribe teleop/actions）───────────
+
+
+class _FakeTransport:
+    def __init__(self):
+        self.published = []
+        self.subscriptions = []
+
+    def publish(self, topic, payload):
+        self.published.append((topic, payload))
+
+    def subscribe(self, topic, handler):
+        self.subscriptions.append((topic, handler))
+
+
+def test_session_teleop_publish_and_subscribe_roundtrip():
+    from cloudrobo_r2c.client.session import R2CSession
+
+    transport = _FakeTransport()
+    session = R2CSession(
+        transport=transport, client_id="test", project_id="p", device_id="d"
+    )
+    payload = TeleopFrame.from_dict(ACTION_DATA).serialize()
+    session.publish_teleop_actions(payload)
+    assert transport.published[-1][0] == "p/d/teleop/actions"
+    assert transport.published[-1][1] == payload
+
+    received = []
+    session.subscribe_teleop_actions(received.append)
+    assert transport.subscriptions[-1][0] == "p/d/teleop/actions"
+    transport.subscriptions[-1][1](payload)
+    assert isinstance(received[0], TeleopFrame)
+    assert received[0].end_effector_states.position == [0.7]
+
+
+def test_session_teleop_publish_frame_object():
+    from cloudrobo_r2c.client.session import R2CSession
+
+    transport = _FakeTransport()
+    session = R2CSession(
+        transport=transport, client_id="test", project_id="p", device_id="d"
+    )
+    frame = TeleopFrame.from_dict({"timestamp": 1, "start": {}})
+    session.publish_teleop_actions(frame)
+    assert transport.published[-1][0] == "p/d/teleop/actions"
+    assert TeleopFrame.from_protobuf(transport.published[-1][1]).command == "start"
