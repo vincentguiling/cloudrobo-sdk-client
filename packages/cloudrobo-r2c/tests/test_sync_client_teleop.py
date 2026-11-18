@@ -146,7 +146,7 @@ def test_teleop_action_executes_only_when_running_with_matching_session():
     )
     client._on_teleop_frame(frame)
     assert _pose_of(adapter) == pytest.approx(LEFT_POSE)
-    assert adapter.get_observation()["gripper_positions"][0] == pytest.approx(0.3)
+    assert adapter.get_observation()["gripper_positions"][0] == pytest.approx(0.7)
 
     # session_id 不匹配：丢弃
     other = TeleopFrame.from_dict(

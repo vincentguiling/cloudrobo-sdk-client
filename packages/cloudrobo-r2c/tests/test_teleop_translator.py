@@ -214,7 +214,8 @@ def test_interface_teleop_to_device_is_optional():
     assert isinstance(translator, IDeviceTranslator)
     assert callable(translator.teleop_to_device)
     command = translator.teleop_to_device(TeleopFrame.from_dict(ACTION_FRAME))
-    assert command["left_gripper"] == pytest.approx(0.2)
+    # one_minus：按住(0) → 下发 1（闭合）
+    assert command["left_gripper"] == pytest.approx(0.8)
 
 
 def test_build_teleop_to_device_mapper_helper():
@@ -327,13 +328,14 @@ def test_agibot_config_teleop_section_loads_and_maps(config_path):
     command = translator.teleop_to_device(TeleopFrame.from_dict(ACTION_FRAME))
     assert command["left_pose_cmd_ee"] == pytest.approx(LEFT_POSE)
     assert command["right_pose_cmd_ee"] == pytest.approx(RIGHT_POSE)
-    assert command["left_gripper"] == pytest.approx(0.2)
-    assert command["right_gripper"] == pytest.approx(0.8)
+    # one_minus 反转：按住(0) → 1（闭合），松开(1) → 0（张开）
+    assert command["left_gripper"] == pytest.approx(0.8)
+    assert command["right_gripper"] == pytest.approx(0.2)
 
     # 单侧帧：只出该侧目标键（另一侧保持不动）
     single = translator.teleop_to_device(TeleopFrame.from_dict(LEFT_ONLY_FRAME))
     assert single["left_pose_cmd_ee"] == pytest.approx(LEFT_POSE)
-    assert single["left_gripper"] == pytest.approx(0.35)
+    assert single["left_gripper"] == pytest.approx(0.65)
     assert "right_pose_cmd_ee" not in single
     assert "right_gripper" not in single
 
@@ -364,7 +366,7 @@ def test_agibot_mock_end_to_end_teleop_to_mock_state():
     obs = adapter.get_observation()
     assert list(before["ee_poses_data"]["pose"][0]) != pytest.approx(LEFT_POSE)
     assert list(obs["ee_poses_data"]["pose"][0]) == pytest.approx(LEFT_POSE)
-    assert list(obs["gripper_positions"]) == pytest.approx([0.2, 0.8])
+    assert list(obs["gripper_positions"]) == pytest.approx([0.8, 0.2])
 
 
 def test_agibot_mock_teleop_command_frame_does_not_move_device():
@@ -399,7 +401,7 @@ def test_agibot_mock_end_to_end_single_side_keeps_other_side():
     obs = adapter.get_observation()
     # 左侧更新
     assert list(obs["ee_poses_data"]["pose"][0]) == pytest.approx(LEFT_POSE)
-    assert obs["gripper_positions"][0] == pytest.approx(0.35)
+    assert obs["gripper_positions"][0] == pytest.approx(0.65)
     # 右侧保持不动（位姿与夹爪均未下发）
     assert list(obs["ee_poses_data"]["pose"][1]) == pytest.approx(before_right_pose)
     assert obs["gripper_positions"][1] == pytest.approx(before_gripper[1])
