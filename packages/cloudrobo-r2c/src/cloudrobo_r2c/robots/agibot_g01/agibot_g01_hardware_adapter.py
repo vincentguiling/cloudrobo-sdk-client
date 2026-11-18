@@ -842,7 +842,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         elif side_gripper:
             executed += self._apply_gripper(client, side_gripper, None)
         elif "gripper_cmd_pos" in command:
-            values = self._gripper_user_to_gdk(command["gripper_cmd_pos"])
+            values = self.as_float_list(command["gripper_cmd_pos"])
             if self._check_dims("gripper_cmd_pos", values):
                 client.move_gripper(values)
                 executed.append("gripper_cmd_pos")
@@ -890,24 +890,6 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         else:
             logger.debug("[AgiBotG01] executed actions: %s", executed)
 
-    def _gripper_user_to_gdk(self, values: Any) -> List[float]:
-        """夹爪值统一语义转换（用户域 → GDK 域）。
-
-        全链路统一语义：**0=闭合、1=张开**（观测 / state/current / 动作一致）。
-        GDK 实测：归一化 0=张开、1=闭合（原始量程 [35,120] 同理镜像），
-        故用户域到 GDK 域做一次镜像：
-
-        - [0,1] 归一化输入：gdk = 1 - v
-        - [35,120] 原始输入：gdk = 35 + 120 - v（镜像对称，兼容旧习惯输入）
-        """
-        out: List[float] = []
-        for v in self.as_float_list(values):
-            if 35.0 <= v <= 120.0:
-                out.append(35.0 + 120.0 - v)
-            else:
-                out.append(1.0 - v)
-        return out
-
     def _apply_gripper(
         self,
         client: AgiBotG01Client,
@@ -915,6 +897,9 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         fallback: Any = None,
     ) -> List[str]:
         """夹爪下发：双侧齐全直接下发；单侧用设备当前值补齐另一侧（保持不动）。
+
+        夹爪值全链路统一语义 **0=闭合、1=张开**：观测 / state/current 读数
+        反转一次后与本下发路径一致，用户值直传 GDK，无需换算。
 
         Args:
             sides: ``{"left": value, "right": value}``，可只含一侧。
@@ -928,8 +913,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         if left is None and right is None:
             return []
         if left is not None and right is not None:
-            gdk = self._gripper_user_to_gdk([left, right])
-            client.move_gripper(gdk)
+            client.move_gripper([float(left), float(right)])
             return ["gripper"]
 
         # 单侧：读设备当前另一侧值补齐（读取失败 → 尝试 fallback → 跳过）
@@ -944,14 +928,10 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 sides,
             )
             return []
-        # 缺失侧的 hold 是设备当前 GDK 域原始值，必须原样回写（不再做
-        # 用户域→GDK 域换算），否则另一侧会被镜像翻转。
-        gdk_left = (
-            self._gripper_user_to_gdk([left])[0] if left is not None else hold[0]
-        )
-        gdk_right = (
-            self._gripper_user_to_gdk([right])[0] if right is not None else hold[1]
-        )
+        # GDK 写接口与统一语义一致（0=闭合、1=张开），用户值直传；
+        # 缺失侧的 hold 为设备当前值（GDK 域），原样回写保持不动。
+        gdk_left = float(left) if left is not None else hold[0]
+        gdk_right = float(right) if right is not None else hold[1]
         client.move_gripper([gdk_left, gdk_right])
         return ["gripper(single_side)"]
 
