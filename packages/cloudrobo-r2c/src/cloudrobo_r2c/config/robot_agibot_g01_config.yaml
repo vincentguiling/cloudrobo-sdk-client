@@ -358,15 +358,17 @@ teleop_to_device:
 
     # --- 夹持器（**左右分开**：遥操可能只有左手或只有右手握持，缺失侧
     #     适配器取设备当前值保持不动；两侧齐全则同时下发）。
-    #     触发值语义：操作端 grip **按住=0、松开=1**，直传为夹爪目标
-    #     （0=闭合 / 1=张开，与《指南》归一化量程一致） ---
+    #     触发值语义：操作端 grip **按住=0、松开=1**；现场实测 GDK 夹爪
+    #     0=张开、1=闭合 → 加 one_minus 反转（按住 → 下发 1=闭合） ---
     - target: "left_gripper"
       source: "end_effector_states.left.position"
+      transforms: one_minus
       use_assign_dotted: false
       required: false
 
     - target: "right_gripper"
       source: "end_effector_states.right.position"
+      transforms: one_minus
       use_assign_dotted: false
       required: false
 

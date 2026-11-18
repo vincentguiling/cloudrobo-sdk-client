@@ -695,6 +695,24 @@ class ToFloatTransformer(IValueTransformer):
 
 
 @dataclass(frozen=True)
+class OneMinusTransformer(IValueTransformer):
+    """``1 - value``（标量或逐元素）：0↔1 触发值/夹爪等归一化量反转。
+
+    典型用途：操作端 grip 按住=0、松开=1，而设备夹爪 0=张开、1=闭合时，
+    配置一条 ``transforms: one_minus`` 即完成方向对齐。
+    """
+
+    def transform(self, value: Any, config: Any = None, context: Any = None) -> Any:
+        if isinstance(value, bool):
+            return 1.0 - float(value)
+        if isinstance(value, (list, tuple)):
+            return [1.0 - float(v) for v in value]
+        if isinstance(value, np.ndarray):
+            return 1.0 - value.astype(np.float64)
+        return 1.0 - float(value)
+
+
+@dataclass(frozen=True)
 class ToIntTransformer(IValueTransformer):
     """Convert a scalar value to int."""
 
@@ -2501,6 +2519,7 @@ class ScalarToRosFloat64Transformer(IValueTransformer):
 DEFAULT_TRANSFORMERS: Dict[str, IValueTransformer] = {
     "identity": IdentityTransformer(),
     "to_float": ToFloatTransformer(),
+    "one_minus": OneMinusTransformer(),
     "to_int": ToIntTransformer(),
     "to_str": ToStrTransformer(),
     "to_bool": ToBoolTransformer(),
