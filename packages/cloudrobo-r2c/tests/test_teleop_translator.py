@@ -365,7 +365,7 @@ def test_agibot_mock_end_to_end_teleop_to_mock_state():
     obs = adapter.get_observation()
     assert list(before["ee_poses_data"]["pose"][0]) != pytest.approx(LEFT_POSE)
     assert list(obs["ee_poses_data"]["pose"][0]) == pytest.approx(LEFT_POSE)
-    assert list(obs["gripper_positions"]) == pytest.approx([0.2, 0.8])
+    assert list(obs["gripper_positions"]) == pytest.approx([0.8, 0.2])
 
 
 def test_agibot_mock_teleop_command_frame_does_not_move_device():
@@ -400,7 +400,7 @@ def test_agibot_mock_end_to_end_single_side_keeps_other_side():
     obs = adapter.get_observation()
     # 左侧更新
     assert list(obs["ee_poses_data"]["pose"][0]) == pytest.approx(LEFT_POSE)
-    assert obs["gripper_positions"][0] == pytest.approx(0.35)
+    assert obs["gripper_positions"][0] == pytest.approx(0.65)
     # 右侧保持不动（位姿与夹爪均未下发）
     assert list(obs["ee_poses_data"]["pose"][1]) == pytest.approx(before_right_pose)
     assert obs["gripper_positions"][1] == pytest.approx(before_gripper[1])

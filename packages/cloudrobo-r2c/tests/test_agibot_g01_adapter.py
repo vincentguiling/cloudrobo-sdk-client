@@ -800,7 +800,7 @@ def test_route_gripper_via_joint_states():
         }
     )
     assert any(
-        c[0] == "move_gripper" and c[1] == pytest.approx([0.75, 0.1])
+        c[0] == "move_gripper" and c[1] == pytest.approx([0.25, 0.9])
         for c in _last_robot().calls
     )
 
@@ -1006,7 +1006,7 @@ def test_route_single_side_gripper_keeps_other_side():
     calls = [c for c in _last_robot().calls if c[0] == "move_gripper"]
     assert calls, "expected move_gripper for single-side command"
     # 用户域 0.25 → GDK 0.75；另一侧 GDK 原始 hold 值镜像对称
-    assert calls[-1][1] == pytest.approx([0.75, 98.75])  # GDK 当前值原样
+    assert calls[-1][1] == pytest.approx([0.25, 98.75])  # 用户值直传，另一侧 GDK 当前值
 
 
 def test_route_reject_unknown_names():

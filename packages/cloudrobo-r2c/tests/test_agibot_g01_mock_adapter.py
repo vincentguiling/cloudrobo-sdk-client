@@ -262,12 +262,14 @@ def test_gripper_action_accepts_normalized_and_raw():
     adapter.send_action(
         {"joint_names": ["left_gripper", "right_gripper"], "arm_cmd_joint_pos": [0.5, 0.9]}
     )
-    assert list(adapter.get_observation()["gripper_positions"]) == pytest.approx([0.5, 0.9])
+    # 读端反转（统一 0=闭合）：下发 0.5/0.9 → 观测 0.5/0.1
+    assert list(adapter.get_observation()["gripper_positions"]) == pytest.approx([0.5, 0.1])
     # 原始量程输入（[35, 120]）：90 → (90 - 35) / 85
     adapter.send_action(
         {"joint_names": ["left_gripper", "right_gripper"], "arm_cmd_joint_pos": [90.0, 120.0]}
     )
-    assert list(adapter.get_observation()["gripper_positions"]) == pytest.approx([55.0 / 85.0, 1.0])
+    # 原始 90 → 归一化 55/85 → 读端反转；原始 120 → 1.0 → 反转 0.0
+    assert list(adapter.get_observation()["gripper_positions"]) == pytest.approx([30.0 / 85.0, 0.0])
 
 
 def test_single_side_gripper_keeps_other_side():
@@ -455,8 +457,8 @@ def test_mock_config_yaml_translates_observation_and_action(_mock_hardware_type_
     adapter.send_action(device_command)
     obs = adapter.get_observation()
     assert list(obs["joint_positions"]) == pytest.approx([0.2] * ARM_DOF)
-    # r2c 规则 one_minus（模型 1=闭合 → 统一 0=闭合）→ 下发 → 观测回到用户域
-    assert list(obs["gripper_positions"]) == pytest.approx([0.6, 0.4])
+    # r2c 规则 one_minus 把模型值换到统一语义，动作直传、读端反转 → 回到模型域
+    assert list(obs["gripper_positions"]) == pytest.approx([0.4, 0.6])
 
 
 # ---------------------------------------------------------------------------
