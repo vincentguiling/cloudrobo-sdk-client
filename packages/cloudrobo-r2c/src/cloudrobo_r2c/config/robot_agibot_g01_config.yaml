@@ -85,9 +85,6 @@ hardware:
       head: "cam_high"
       hand_left: "cam_left_wrist"
       hand_right: "cam_right_wrist"
-    # 相机通道序：GDK CosineCamera 输出 RGB，发布前统一转成 OpenCV 编码所需的 BGR
-    # （如现场实际为 BGR，可改为 "bgr" 关闭转换）
-    camera_color_order: "rgb"
     # 相机取流线程轮询间隔（秒），默认 0.03 ≈ 30Hz
     # camera_poll_interval_s: 0.03
     # RobotController（末端位姿/关节控制；创建失败自动降级为仅RobotDds 关节控制）
@@ -197,17 +194,26 @@ device_to_r2c:
     # --- 相机（色彩通道；深度通道可仿照增加 images.depth.* 映射） ---
     - target_key: "images.color.cam_high"
       source_path: "cam_high"
-      transforms: ndarray_to_jpeg
+      # GDK 输出 RGB；OpenCV 的 JPEG 编码期望 BGR → 配置化通道转换
+      transforms:
+        - rgb_to_bgr
+        - ndarray_to_jpeg
       required: false
 
     - target_key: "images.color.cam_left_wrist"
       source_path: "cam_left_wrist"
-      transforms: ndarray_to_jpeg
+      # GDK 输出 RGB；OpenCV 的 JPEG 编码期望 BGR → 配置化通道转换
+      transforms:
+        - rgb_to_bgr
+        - ndarray_to_jpeg
       required: false
 
     - target_key: "images.color.cam_right_wrist"
       source_path: "cam_right_wrist"
-      transforms: ndarray_to_jpeg
+      # GDK 输出 RGB；OpenCV 的 JPEG 编码期望 BGR → 配置化通道转换
+      transforms:
+        - rgb_to_bgr
+        - ndarray_to_jpeg
       required: false
 
     # --- 头部 / 腰部 / 灵巧手 / 整体姿态 → extensions（float32 一维数组） ---
@@ -343,7 +349,9 @@ teleop_to_device:
       required: false
 
     # --- 夹持器（**左右分开**：遥操可能只有左手或只有右手握持，缺失侧
-    #     适配器取设备当前值保持不动；两侧齐全则同时下发） ---
+    #     适配器取设备当前值保持不动；两侧齐全则同时下发）。
+    #     触发值语义：操作端 grip **按住=0、松开=1**，直传为夹爪目标
+    #     （0=闭合 / 1=张开，与《指南》归一化量程一致） ---
     - target: "left_gripper"
       source: "end_effector_states.left.position"
       use_assign_dotted: false

@@ -462,6 +462,40 @@ def test_mock_config_yaml_translates_observation_and_action(_mock_hardware_type_
 # ---------------------------------------------------------------------------
 
 
+def test_config_image_transform_reverses_channels_end_to_end(_mock_hardware_type_known):
+    """配置里的 rgb_to_bgr 生效：mock 帧 RGB(R=x 渐变/G=y 渐变/B=常量) 解码后 B/R 对调。"""
+    import cv2
+    import numpy as np
+    from cloudrobo_r2c.translators.device_translator import ConfigurableDeviceTranslator
+
+    config = _load_mock_config()
+    image_rules = [
+        rule
+        for rule in config["device_to_r2c"]["mappings"]
+        if str(rule.get("target_key") or rule.get("target", "")).startswith(
+            "images.color."
+        )
+    ]
+    assert len(image_rules) == 3
+    for rule in image_rules:
+        names = [t if isinstance(t, str) else t.get("name") for t in rule["transforms"]]
+        assert names == ["rgb_to_bgr", "ndarray_to_jpeg"], names
+
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    adapter = _connect()
+    observation = translator.device_to_r2c(adapter.get_observation())
+    jpeg = observation.images.color["cam_high"]
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)  # BGR 顺序
+    height, width = image.shape[:2]
+    b, g, r = (int(v) for v in image[0, 0])
+    # mock 帧的 RGB 通道：R=x 渐变起点 0、G=y 渐变起点 40、B 常量 40
+    assert r <= 8
+    assert abs(g - 40) <= 8
+    assert abs(b - 40) <= 8
+    _b, _g, r_last = (int(v) for v in image[0, width - 1])
+    assert r_last >= 240  # x 渐变末端落在 R 通道
+
+
 def test_entry_point_registered_when_installed():
     eps = entry_points(group="r2c_sdk.adapters")
     mock_eps = [ep for ep in eps if ep.name == "agibot_g01_mock"]
