@@ -477,6 +477,11 @@ class AgiBotG01MockClient:
         ys = np.linspace(40, 200, height, dtype=np.uint8)
         frames: Dict[str, np.ndarray] = {}
         for index, name in enumerate(self._camera_group):
+            if "depth" in str(name):
+                # 深度通道：单通道 uint16（与真机 head_depth 语义一致）
+                depth = np.linspace(0, 6000, width * height, dtype=np.uint16)
+                frames[name] = depth.reshape(height, width)
+                continue
             image = np.empty((height, width, 3), dtype=np.uint8)
             image[:, :, 0] = xs[None, :]
             image[:, :, 1] = ys[:, None]

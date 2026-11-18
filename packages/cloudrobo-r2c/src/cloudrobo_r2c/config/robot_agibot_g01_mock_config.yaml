@@ -103,12 +103,14 @@ hardware:
     # 相机开关与启用的 G01 相机通道（《指南》9.1：head / hand_left / hand_right /
     # head_depth / *_fisheye 等）
     camera_enabled: true
-    camera_group: ["head", "hand_left", "hand_right"]
-    # G01 通道名 → R2C 图像键（images.color.<key>；与 moz1 等适配器的命名约定一致）
+    camera_group: ["head", "hand_left", "hand_right", "head_depth"]
+    # G01 通道名 → R2C 图像键（images.color.<key> / images.depth.<key>；
+    # 与 moz1 等适配器的命名约定一致）
     camera_key_map:
       head: "cam_high"
       hand_left: "cam_left_wrist"
       hand_right: "cam_right_wrist"
+      head_depth: "cam_high_depth"
     # mock 合成相机帧分辨率（像素；真机为设备原生分辨率）
     camera_width: 64
     camera_height: 48
@@ -249,6 +251,12 @@ device_to_r2c:
       transforms:
         - rgb_to_bgr
         - ndarray_to_jpeg
+      required: false
+
+    # --- 头部深度图（16bit 单通道；PNG 无损编码，目标落 images.depth） ---
+    - target_key: "images.depth.cam_high_depth"
+      source_path: "cam_high_depth"
+      transforms: ndarray_to_png
       required: false
 
     # --- 头部 / 腰部 / 灵巧手 / 整体姿态 → extensions（float32 一维数组） ---

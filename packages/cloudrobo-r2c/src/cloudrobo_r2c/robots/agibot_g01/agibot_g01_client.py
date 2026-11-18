@@ -58,6 +58,8 @@ DEFAULT_CAMERA_KEY_MAP: Dict[str, str] = {
     "head": "cam_high",
     "hand_left": "cam_left_wrist",
     "hand_right": "cam_right_wrist",
+    # 头部深度图（16bit，单通道；须在 camera_group 里显式启用）
+    "head_depth": "cam_high_depth",
 }
 
 
