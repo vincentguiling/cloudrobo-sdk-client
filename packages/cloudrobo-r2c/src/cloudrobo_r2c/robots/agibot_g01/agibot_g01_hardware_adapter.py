@@ -444,6 +444,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 client.gripper_states,
                 GRIPPER_DOF,
                 normalize_range=self._gripper_raw_range,
+                invert_normalized=True,  # 统一语义 0=闭合 / 1=张开
             )
             observation["ee_gripper_names"] = list(GRIPPER_JOINT_NAMES)
         else:
@@ -454,6 +455,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 client.gripper_states,
                 GRIPPER_DOF,
                 normalize_range=self._gripper_raw_range,
+                invert_normalized=True,  # 统一语义 0=闭合 / 1=张开
             )
             observation["joint_gripper_names"] = list(GRIPPER_JOINT_NAMES)
         # 头/腰/手经 extensions 以 FLOAT32 打包，观测数组统一使用 float32
@@ -527,6 +529,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             client.gripper_states,
             GRIPPER_DOF,
             normalize_range=self._gripper_raw_range,
+            invert_normalized=True,  # 统一语义 0=闭合 / 1=张开
         )
         self._fill_ee_poses(source, client)
 
@@ -573,11 +576,13 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         size: int,
         dtype: type = np.float64,
         normalize_range: Optional[List[float]] = None,
+        invert_normalized: bool = False,
     ) -> None:
         """读取 ``(数据, 时间戳)`` 型状态并写入观测，失败时回退上次值/零值。
 
         ``normalize_range`` 非空时将原始值线性归一化到 ``[0, 1]``（如夹爪
-        ``[35, 120]`` → ``[0, 1]``）。
+        ``[35, 120]`` → ``[0, 1]``）；``invert_normalized`` 再做一次 ``1 - v``，
+        用于夹爪统一语义 **0=闭合、1=张开**（GDK 归一化语义相反）。
         """
         values = self._safe_state(getter)
         if values is None:
@@ -590,6 +595,8 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
             span = hi - lo
             if span > 0:
                 result = ((result - lo) / span).clip(0.0, 1.0).astype(dtype)
+                if invert_normalized:
+                    result = (1.0 - result).astype(dtype)
         observation[key] = result
 
     def _fill_body_pose(self, observation: Dict[str, Any], getter: Any) -> None:
@@ -835,7 +842,7 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         elif side_gripper:
             executed += self._apply_gripper(client, side_gripper, None)
         elif "gripper_cmd_pos" in command:
-            values = self.as_float_list(command["gripper_cmd_pos"])
+            values = self._gripper_user_to_gdk(command["gripper_cmd_pos"])
             if self._check_dims("gripper_cmd_pos", values):
                 client.move_gripper(values)
                 executed.append("gripper_cmd_pos")
@@ -883,6 +890,24 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         else:
             logger.debug("[AgiBotG01] executed actions: %s", executed)
 
+    def _gripper_user_to_gdk(self, values: Any) -> List[float]:
+        """夹爪值统一语义转换（用户域 → GDK 域）。
+
+        全链路统一语义：**0=闭合、1=张开**（观测 / state/current / 动作一致）。
+        GDK 实测：归一化 0=张开、1=闭合（原始量程 [35,120] 同理镜像），
+        故用户域到 GDK 域做一次镜像：
+
+        - [0,1] 归一化输入：gdk = 1 - v
+        - [35,120] 原始输入：gdk = 35 + 120 - v（镜像对称，兼容旧习惯输入）
+        """
+        out: List[float] = []
+        for v in self.as_float_list(values):
+            if 35.0 <= v <= 120.0:
+                out.append(35.0 + 120.0 - v)
+            else:
+                out.append(1.0 - v)
+        return out
+
     def _apply_gripper(
         self,
         client: AgiBotG01Client,
@@ -903,7 +928,8 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
         if left is None and right is None:
             return []
         if left is not None and right is not None:
-            client.move_gripper([float(left), float(right)])
+            gdk = self._gripper_user_to_gdk([left, right])
+            client.move_gripper(gdk)
             return ["gripper"]
 
         # 单侧：读设备当前另一侧值补齐（读取失败 → 尝试 fallback → 跳过）
@@ -918,11 +944,15 @@ class AgiBotG01HardwareAdapter(IRobotHardwareAdapter):
                 sides,
             )
             return []
-        if left is None:
-            left = hold[0]
-        if right is None:
-            right = hold[1]
-        client.move_gripper([float(left), float(right)])
+        # 缺失侧的 hold 是设备当前 GDK 域原始值，必须原样回写（不再做
+        # 用户域→GDK 域换算），否则另一侧会被镜像翻转。
+        gdk_left = (
+            self._gripper_user_to_gdk([left])[0] if left is not None else hold[0]
+        )
+        gdk_right = (
+            self._gripper_user_to_gdk([right])[0] if right is not None else hold[1]
+        )
+        client.move_gripper([gdk_left, gdk_right])
         return ["gripper(single_side)"]
 
     def _current_gripper(self, client: AgiBotG01Client) -> Optional[List[float]]:

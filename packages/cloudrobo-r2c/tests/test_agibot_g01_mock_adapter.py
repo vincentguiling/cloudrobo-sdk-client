@@ -147,7 +147,7 @@ def test_initial_observation_matches_joint_a_and_pose_a():
     # 双臂 14 关节 = joint_a
     assert list(obs["joint_positions"]) == pytest.approx(DEFAULT_INITIAL_JOINTS)
     # 夹爪（原始 [35, 120] 归一化后）= joint_a 的 [0.15, 0.15]
-    assert list(obs["gripper_positions"]) == pytest.approx(DEFAULT_INITIAL_GRIPPER)
+    assert list(obs["gripper_positions"]) == pytest.approx([1 - v for v in DEFAULT_INITIAL_GRIPPER])
     # 末端位姿 = pose_a 的 left/right（四元数）
     assert obs["left_ee_pose"] == pytest.approx(DEFAULT_INITIAL_EE_POSES["left"])
     assert obs["right_ee_pose"] == pytest.approx(DEFAULT_INITIAL_EE_POSES["right"])
@@ -276,6 +276,7 @@ def test_single_side_gripper_keeps_other_side():
     before = list(adapter.get_observation()["gripper_positions"])
     adapter.send_action({"joint_names": ["left_gripper"], "arm_cmd_joint_pos": [0.5]})
     after = list(adapter.get_observation()["gripper_positions"])
+    # 用户域 0.5（闭合一半）→ GDK 0.5 → 观测 0.5（镜像自反）
     assert after[0] == pytest.approx(0.5)
     assert after[1] == pytest.approx(before[1])
 
@@ -328,7 +329,7 @@ def test_go_home_resets_to_joint_a():
     assert adapter.execute_command("go_home") is True
     obs = adapter.get_observation()
     assert list(obs["joint_positions"]) == pytest.approx(DEFAULT_INITIAL_JOINTS)
-    assert list(obs["gripper_positions"]) == pytest.approx(DEFAULT_INITIAL_GRIPPER)
+    assert list(obs["gripper_positions"]) == pytest.approx([1 - v for v in DEFAULT_INITIAL_GRIPPER])
 
 
 def test_camera_disabled_omits_images():
@@ -361,7 +362,7 @@ def test_get_runtime_frame_contents():
     assert names == _arm_names()
     assert positions == pytest.approx(DEFAULT_INITIAL_JOINTS)
     assert frame["end_effector_states"]["names"] == ["left_gripper", "right_gripper"]
-    assert frame["end_effector_states"]["position"] == pytest.approx(DEFAULT_INITIAL_GRIPPER)
+    assert frame["end_effector_states"]["position"] == pytest.approx([1 - v for v in DEFAULT_INITIAL_GRIPPER])
     assert frame["end_effector_poses"]["names"] == ["left", "right"]
     assert frame["end_effector_poses"]["pose"][0] == pytest.approx(DEFAULT_INITIAL_EE_POSES["left"])
     assert frame["location"] == "mock-site"
@@ -419,7 +420,7 @@ def test_mock_config_yaml_translates_observation_and_action(_mock_hardware_type_
     # 默认通道：joint_states 仅双臂 14 关节；夹爪/位姿走专用字段
     assert len(observation.joint_states.position) == ARM_DOF
     assert observation.joint_states.names[0] == "left_arm_joint1"
-    assert observation.end_effector_states.position == pytest.approx(DEFAULT_INITIAL_GRIPPER)
+    assert observation.end_effector_states.position == pytest.approx([1 - v for v in DEFAULT_INITIAL_GRIPPER])
     assert list(observation.end_effector_poses.names) == ["left", "right"]
     assert observation.end_effector_poses.pose[0] == pytest.approx(DEFAULT_INITIAL_EE_POSES["left"])
     jpeg = observation.images.color.get("cam_high")
@@ -454,7 +455,8 @@ def test_mock_config_yaml_translates_observation_and_action(_mock_hardware_type_
     adapter.send_action(device_command)
     obs = adapter.get_observation()
     assert list(obs["joint_positions"]) == pytest.approx([0.2] * ARM_DOF)
-    assert list(obs["gripper_positions"]) == pytest.approx([0.4, 0.6])
+    # r2c 规则 one_minus（模型 1=闭合 → 统一 0=闭合）→ 下发 → 观测回到用户域
+    assert list(obs["gripper_positions"]) == pytest.approx([0.6, 0.4])
 
 
 # ---------------------------------------------------------------------------
