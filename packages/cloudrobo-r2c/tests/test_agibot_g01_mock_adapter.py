@@ -496,6 +496,37 @@ def test_config_image_transform_reverses_channels_end_to_end(_mock_hardware_type
     assert r_last >= 240  # x 渐变末端落在 R 通道
 
 
+def test_mock_config_publishes_head_depth_image(_mock_hardware_type_known):
+    """头部深度图：head_depth → images.depth.cam_high_depth（16bit PNG）。"""
+    import cv2
+    import numpy as np
+    from cloudrobo_r2c.translators.device_translator import ConfigurableDeviceTranslator
+
+    config = _load_mock_config()
+    depth_rules = [
+        rule
+        for rule in config["device_to_r2c"]["mappings"]
+        if str(rule.get("target_key") or rule.get("target", "")).startswith(
+            "images.depth."
+        )
+    ]
+    assert len(depth_rules) == 1
+    assert depth_rules[0]["target_key"] == "images.depth.cam_high_depth"
+
+    translator = ConfigurableDeviceTranslator.from_config(config)
+    adapter = _connect(config["hardware"]["config"])
+    observation = translator.device_to_r2c(adapter.get_observation())
+    depth = observation.images.depth.get("cam_high_depth")
+    assert depth is not None
+    assert depth[:4] == b"\x89PNG"
+    image = cv2.imdecode(np.frombuffer(depth, np.uint8), cv2.IMREAD_UNCHANGED)
+    height, width = image.shape[:2]
+    assert (height, width) == (48, 64)
+    assert image.dtype == np.uint16
+    assert int(image[0, 0]) == 0
+    assert int(image[-1, -1]) >= 5000
+
+
 def test_entry_point_registered_when_installed():
     eps = entry_points(group="r2c_sdk.adapters")
     mock_eps = [ep for ep in eps if ep.name == "agibot_g01_mock"]
