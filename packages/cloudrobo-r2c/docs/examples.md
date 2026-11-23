@@ -127,7 +127,15 @@ cloudrobo r2c client --project-id test-tenant --device-id device-001 --endpoints
 
 # 录制观测数据
 cloudrobo r2c client --client-config config/client_config.yaml --record observations.pkl --duration 60
+
+# 遥操操作端：主从臂（局域网现场遥操，录制遥操数据集）
+cloudrobo r2c teleop --teleop-config config/teleop_so101_leader.yaml \
+    --endpoints tcp/<机器人IP>:7447 --record teleop_session.r2cr
+
+# 遥操操作端：VR（远程遥操走平台证书；无 VR 设备先跑 mock 发送端联调）
 ```
+
+遥操配置、输入源协议与录制格式详见 [遥操与数据采集](teleop.md)。
 
 ## 更多示例
 

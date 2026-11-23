@@ -11,6 +11,7 @@ CloudRobo Robot-to-Cloud (R2C) 数据面 SDK，基于 Zenoh pub/sub 传输、Pro
 - **相机推流**：LiveKit WebRTC 推流（`camera/`），支持 RealSense / V4L2 / 视频 / 静态图 / 随机图帧源
 - **数据面转发**：`forwarder.py` 将本地主链路数据透传到云端会话（`--forwarder-config`）
 - **运行模式**：`ModeControl` 统一管理 AUTO / CONTROLLED / ASSISTED 遥操与辅助模式
+- **遥操与数据采集**：主从臂（LeRobot 主臂）输入源 → Actions（`teleop/`），现场（局域网）遥操与观测+动作成对录制已实现；远程遥操与 VR 输入为设计阶段内容（设计文档 v0.8）；见 [docs/teleop.md](docs/teleop.md)
 - **Proto 扩展**：`r2c_sdk.protos` entry-point 注册第三方 proto
 
 ## 安装
