@@ -6,10 +6,11 @@ custom_topic_subscriber / custom_topic_publisher（--topic-proto 指定）。
 pb2 由构建命令编译到 common/models/generated，不入库；本测试在 pb2
 缺失时整体 skip。
 
-proto 要点（2026-11-16 最新版）：oneof 命令为 start/pause/resume/finish/quit
-（quit 回归，四个生命周期载荷均为空消息）；input_mode 提升为帧级字段
-（field 14），随 start 设置并在后续帧继续携带；原始手柄输入不再有平铺
-raw_inputs（field 12 reserved），改为 ``map<string, ExtensionValue>
+proto 要点（2026-11-26 最新版）：oneof 命令为 start/pause/resume/finish/quit；
+start 自云端控制会话矩阵校准起携带每手变换矩阵载荷（pos/rot × left/right，
+Matrix3 行主序 9 值，2026-11-26），pause/resume/finish/quit 为空消息；
+input_mode 为帧级字段（field 3），随 start 设置并在后续帧继续携带；原始
+手柄输入不再有平铺 raw_inputs（已移除），改为 ``map<string, ExtensionValue>
 extensions = 13``，键名按 ``<hand>.btn.primary`` / ``<hand>.btn.thumbstick``
 / ``<hand>.stick.x/y`` 分组。位姿/触发值/关节用 teleop 专属消息
 （TeleopEndEffectorPoses map / TeleopStep），不复用 observation.proto。
@@ -120,8 +121,8 @@ def test_empty_command_frames(command):
 
 
 def test_quit_command_present_again():
-    # 2026-11-16 后期：TeleopQuit 回归（field 8 = quit，空载荷），
-    # 与 start/pause/resume/finish 一样由 oneof 选择。
+    # TeleopQuit 为 oneof command 的 field 9（空载荷），与
+    # start/pause/resume/finish 一样由 oneof 选择。
     from cloudrobo_r2c.common.models.wrappers.teleop import _COMMAND_FIELDS
 
     assert "quit" in _COMMAND_FIELDS
@@ -131,7 +132,7 @@ def test_quit_command_present_again():
 
 
 def test_input_mode_variants():
-    # input_mode 为帧级字段（field 14），随 start 设置并在后续帧继续携带
+    # input_mode 为帧级字段（field 3），随 start 设置并在后续帧继续携带
     p = TeleopFrame.from_dict(
         {"timestamp": 1, "start": {}, "input_mode": "isomorphic"}
     ).serialize()
@@ -148,6 +149,58 @@ def test_input_mode_variants():
 def test_invalid_input_mode_raises():
     with pytest.raises(ValueError, match="input_mode"):
         TeleopFrame.from_dict({"timestamp": 1, "start": {}, "input_mode": "bogus"}).serialize()
+
+
+# ── start 载荷：云端每手变换矩阵（bundle 云端控制会话，2026-11-26）────
+
+
+_IDENTITY_3X3 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def test_start_matrices_roundtrip():
+    rot_right = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0]
+    payload = TeleopFrame.from_dict(
+        {
+            "timestamp": 1,
+            "operator_id": "op",
+            "session_id": "s-cloud",
+            "input_mode": "vr",
+            "start": {
+                "pos_matrix_left": {"values": _IDENTITY_3X3},
+                "rot_matrix_right": rot_right,
+            },
+        }
+    ).serialize()
+    dec = TeleopFrame.from_protobuf(payload)
+    assert dec.command == "start"
+    assert dec.start_matrices["pos_matrix_left"] == pytest.approx(_IDENTITY_3X3)
+    assert dec.start_matrices["rot_matrix_right"] == pytest.approx(rot_right)
+    # 未下发的侧不出现（保持当前值语义）
+    assert "rot_matrix_left" not in dec.start_matrices
+    assert "pos_matrix_right" not in dec.start_matrices
+    # 字节级往返（listener 判别依赖重序列化等长）
+    assert TeleopFrame.from_protobuf(payload).serialize() == payload
+    # JSON 输出携带矩阵
+    assert dec.to_dict()["start_matrices"]["rot_matrix_right"] == rot_right
+
+
+def test_start_without_matrices_keeps_empty():
+    payload = TeleopFrame.from_dict(
+        {"timestamp": 1, "operator_id": "op", "session_id": "s", "start": {}}
+    ).serialize()
+    dec = TeleopFrame.from_protobuf(payload)
+    assert dec.command == "start"
+    assert dec.start_matrices == {}
+    assert TeleopFrame.from_protobuf(payload).serialize() == payload
+
+
+def test_start_matrix_invalid_payload_raises():
+    from cloudrobo_r2c.common.models.wrappers.teleop import _parse_start_matrices
+
+    with pytest.raises(ValueError, match="9"):
+        _parse_start_matrices({"pos_matrix_left": [0.0] * 8})
+    with pytest.raises(ValueError, match="9"):
+        _parse_start_matrices({"rot_matrix_left": "not-a-list"})
 
 
 def test_removed_keys_fail_fast():

@@ -2,7 +2,8 @@
 
 验证设计 §3.3.1.2 的会话门控：
 
-- RUNNING 时 ``inference/actions`` 不被消费（不执行、不缓存）；
+- 会话活跃期（RUNNING/PAUSED）``inference/actions`` 不被消费（不执行、
+  不缓存）：RUNNING 只执行遥操动作，PAUSED 整体保持位姿；
 - ``teleop/actions`` 动作帧仅在 RUNNING 且 ``session_id`` 匹配时驱动设备；
 - pause 全停、resume 恢复、finish/quit 回到 IDLE（策略动作恢复执行）；
 - 未声明 ``teleop_to_device`` 段的机器人不订阅 ``teleop/actions``。
@@ -120,6 +121,30 @@ def test_inference_actions_ignored_while_teleop_running():
     # 策略动作既不执行也不缓存
     assert client._action_queue.qsize() == 0
     assert client._teleop_dropped_inference == 1
+
+
+def test_inference_actions_ignored_while_teleop_paused():
+    # 设计 §3.3.1.2：PAUSED 时两路都不执行——策略动作也不消费（整体
+    # 保持位姿），避免"暂停遥操但策略继续动"。
+    client, adapter, _ = _client()
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 1, "session_id": "s-1", "start": {}})
+    )
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 2, "session_id": "s-1", "pause": {}})
+    )
+    assert client._teleop_session_state() == "paused"
+
+    client._enqueue_action_chunk(_actions_chunk())
+    assert client._action_queue.qsize() == 0
+    assert client._teleop_dropped_inference == 1
+
+    # finish 回 IDLE 后策略动作恢复消费
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 3, "session_id": "s-1", "finish": {}})
+    )
+    client._enqueue_action_chunk(_actions_chunk())
+    assert client._action_queue.qsize() == 2
 
 
 def test_teleop_action_executes_only_when_running_with_matching_session():
