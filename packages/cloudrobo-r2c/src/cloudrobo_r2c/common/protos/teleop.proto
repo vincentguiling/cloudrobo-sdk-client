@@ -77,9 +77,26 @@ message TeleopFrame {
   map<string, ExtensionValue> extensions = 13;
 }
 
-// Start carries no payload of its own: the input mode lives on the frame
-// (TeleopFrame.input_mode), so all lifecycle commands are empty messages.
-message TeleopStart {}
+// Start carries the cloud-issued per-hand transform calibration (bundle
+// mode); the input mode lives on the frame (TeleopFrame.input_mode), so
+// the other lifecycle commands stay empty messages.
+message TeleopStart {
+  // Per-hand transform calibration handed down by the cloud in bundle mode
+  // (2026-11-26). The operator HUD applies it to the controller poses while
+  // RUNNING and shows it in the matrix panels:
+  //   pos: p_eff = p_base + q_head * M_pos * conj(q_head) * (p - p_base)
+  //   rot: q_eff = q_ctrl * M_rot
+  // 9 values, row-major 3x3. Empty/unset = keep the HUD's current value.
+  Matrix3 pos_matrix_left = 1;
+  Matrix3 rot_matrix_left = 2;
+  Matrix3 pos_matrix_right = 3;
+  Matrix3 rot_matrix_right = 4;
+}
+
+// Row-major 3x3 matrix (9 values).
+message Matrix3 {
+  repeated double values = 1;
+}
 
 // Empty payloads; presence in oneof selects the transition.
 message TeleopPause {}

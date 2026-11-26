@@ -7,7 +7,10 @@ teleop.proto 是 teleop topic 的唯一 proto（只 import common.proto；位姿
 不进消息——数据缺席即安全信号。
 
 会话输入模式（input_mode：vr/isomorphic）是帧级字段，随 start 设置并在
-后续帧继续携带；四个生命周期命令载荷均为空消息。
+后续帧继续携带；pause/resume/finish/quit 载荷为空消息。start 载荷携带
+云端（bundle 云端控制会话）下发的每手变换矩阵（2026-11-26）：
+``pos_matrix_left`` / ``rot_matrix_left`` / ``pos_matrix_right`` /
+``rot_matrix_right``（Matrix3，行主序 9 值；不带的字段保持当前值）。
 
 原始手柄/主从臂输入（primary 按钮、摇杆按键与轴值）经 extensions 透传，
 键名按 ``<hand>.btn.primary`` / ``<hand>.btn.thumbstick`` /
@@ -23,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from .common import ExtensionValue
 from .observations import EndEffectorPoses, EndEffectorStates
@@ -104,9 +107,17 @@ class RawInputs:
         return extensions
 
 
-# 会话命令名 ↔ oneof 字段（proto: TeleopStart/Pause/Resume/Finish；
-# TeleopQuit 已于 2026-11-16 移除，field 8/"quit" 被 reserved）
+# 会话命令名 ↔ oneof 字段（proto: TeleopFrame oneof command）。start 自
+# 2026-11-26 起携带云端下发的每手变换矩阵载荷，其余命令为空消息。
 _COMMAND_FIELDS = ("start", "pause", "resume", "finish", "quit")
+
+# start 载荷中的每手变换矩阵字段（Matrix3，行主序 9 值；缺省 = 保持当前值）
+_START_MATRIX_FIELDS = (
+    "pos_matrix_left",
+    "rot_matrix_left",
+    "pos_matrix_right",
+    "rot_matrix_right",
+)
 
 # 2026-11-15 从 proto 移除的旧顶层键：输入中出现即 fail-fast，
 # 提示按新协议构造（raw_inputs → extensions；quit 已于 2026-11-16 回归，不再是旧键）
@@ -137,6 +148,37 @@ def _parse_command(data: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _parse_start_matrices(payload: Any) -> Dict[str, List[float]]:
+    """解析 start 载荷中的每手变换矩阵（Matrix3，行主序 9 值）。
+
+    dict 输入形如 ``{"pos_matrix_left": {"values": [...]}}`` 或简写
+    ``{"pos_matrix_left": [9 个数值]}``；未出现的字段不进结果（保持
+    当前值语义）。非 9 值或非数值元素 fail-fast。
+    """
+    if not isinstance(payload, dict):
+        return {}
+    matrices: Dict[str, List[float]] = {}
+    for name in _START_MATRIX_FIELDS:
+        value = payload.get(name)
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            value = value.get("values")
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(
+                f"TeleopFrame start {name!r} must be 9 row-major values, "
+                f"got {type(value).__name__}"
+            )
+        values = [float(v) for v in value]
+        if len(values) != 9:
+            raise ValueError(
+                f"TeleopFrame start {name!r} must carry exactly 9 "
+                f"row-major values, got {len(values)}"
+            )
+        matrices[name] = values
+    return matrices
+
+
 @dataclass
 class TeleopFrame:
     """Teleop 操作端帧：会话命令 + 末端位姿/触发值 + 透传输入。"""
@@ -148,6 +190,9 @@ class TeleopFrame:
     command: Optional[str] = None
     # 会话输入模式（帧级字段）：「vr」（当前）/「isomorphic」（预留）
     input_mode: str = "unspecified"
+    # start 帧携带的云端变换矩阵（Matrix3，行主序 9 值；键见
+    # _START_MATRIX_FIELDS，缺省字段 = 保持当前值）
+    start_matrices: Dict[str, List[float]] = field(default_factory=dict)
     joint_states: EndEffectorStates = field(default_factory=EndEffectorStates)
     end_effector_poses: EndEffectorPoses = field(default_factory=EndEffectorPoses)
     end_effector_states: EndEffectorStates = field(default_factory=EndEffectorStates)
@@ -159,17 +204,14 @@ class TeleopFrame:
         if not isinstance(data, dict):
             raise ValueError(f"TeleopFrame data must be a dict, got {type(data).__name__}")
         command = _parse_command(data)
-        # input_mode 是帧级字段（proto: TeleopFrame.input_mode = 14）；
+        # input_mode 是帧级字段（proto: TeleopFrame.input_mode = 3）；
         # 兼容旧输入形态：也接受 {"start": {"input_mode": ...}}
+        start_payload = data.get("start")
         raw_input_mode = data.get("input_mode")
-        if raw_input_mode is None:
-            start_payload = data.get("start") or {}
-            raw_input_mode = (
-                start_payload.get("input_mode")
-                if isinstance(start_payload, dict)
-                else None
-            )
+        if raw_input_mode is None and isinstance(start_payload, dict):
+            raw_input_mode = start_payload.get("input_mode")
         input_mode = str(raw_input_mode or "unspecified")
+        start_matrices = _parse_start_matrices(start_payload)
         joint_states_data = data.get("joint_states") or {}
         joint_states = EndEffectorStates(
             names=list(joint_states_data.get("names", [])),
@@ -199,6 +241,7 @@ class TeleopFrame:
             session_id=data.get("session_id", ""),
             command=command,
             input_mode=input_mode,
+            start_matrices=start_matrices,
             joint_states=joint_states,
             end_effector_poses=ee_poses,
             end_effector_states=ee_states,
@@ -212,6 +255,13 @@ class TeleopFrame:
         pb = teleop_pb2.TeleopFrame()
         pb.ParseFromString(payload)
         which = pb.WhichOneof("command")
+        # start 载荷：云端下发的每手变换矩阵（Matrix3，行主序 9 值）
+        start_matrices: Dict[str, List[float]] = {}
+        if which == "start":
+            for name in _START_MATRIX_FIELDS:
+                matrix = getattr(pb.start, name)
+                if len(matrix.values):
+                    start_matrices[name] = [float(v) for v in matrix.values]
         # input_mode 是帧级字段（proto 枚举名 INPUT_MODE_VR → 简名 vr，与
         # to_protobuf 约定互逆）
         enum_name = teleop_pb2.InputMode.Name(pb.input_mode)
@@ -226,6 +276,7 @@ class TeleopFrame:
             session_id=pb.session_id,
             command=which,
             input_mode=input_mode,
+            start_matrices=start_matrices,
             joint_states=EndEffectorStates(
                 names=list(pb.joint_states.names),
                 position=list(pb.joint_states.position.data),
@@ -252,6 +303,12 @@ class TeleopFrame:
         pb.session_id = self.session_id
         if self.command is not None:
             getattr(pb, self.command).SetInParent()
+            if self.command == "start":
+                for name, values in self.start_matrices.items():
+                    if name in _START_MATRIX_FIELDS:
+                        getattr(pb.start, name).values.extend(
+                            float(v) for v in values
+                        )
         if self.input_mode != "unspecified":
             try:
                 pb.input_mode = teleop_pb2.InputMode.Value(
@@ -292,6 +349,9 @@ class TeleopFrame:
             "session_id": self.session_id,
             "command": self.command,
             "input_mode": self.input_mode,
+            "start_matrices": {
+                name: list(values) for name, values in self.start_matrices.items()
+            },
             "joint_states": {
                 "names": list(self.joint_states.names),
                 "position": list(self.joint_states.position),

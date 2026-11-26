@@ -520,9 +520,10 @@ class SyncRobotClient:
         self._recorder = recorder
 
         # ── Teleop session gating (plan B) ────────────────────────────────
-        # While a teleop session is RUNNING, ``inference/actions`` is not
-        # consumed and only ``teleop/actions`` frames drive the device
-        # (design §3.3.1.2).  Enabled when the robot config declares a
+        # While a teleop session is active (RUNNING or PAUSED),
+        # ``inference/actions`` is not consumed; only ``teleop/actions``
+        # frames drive the device — RUNNING executes them, PAUSED holds the
+        # pose (design §3.3.1.2).  Enabled when the robot config declares a
         # ``teleop_to_device`` section (manifest-declared capability).
         self.teleop_enabled = bool(teleop_enabled)
         self._teleop_lock = threading.Lock()
@@ -749,11 +750,11 @@ class SyncRobotClient:
         """Subscribe ``teleop/actions`` and drive the device during teleop sessions.
 
         会话门控（设计 §3.3.1.2）：
-        - 命令帧任何状态优先处理：start → RUNNING，pause → PAUSED，
-          resume → RUNNING，finish/quit → IDLE；
+        - 命令帧任何状态优先处理：start → RUNNING（重复 start 以新会话
+          覆盖），pause → PAUSED，resume → RUNNING，finish/quit → IDLE；
         - 动作帧仅在 RUNNING 且 ``session_id`` 匹配时执行（经
           ``translator.teleop_to_device`` → ``send_action``），否则丢弃并计数；
-        - ``_enqueue_action_chunk`` 在 RUNNING 时忽略 ``inference/actions``，
+        - 会话活跃期（RUNNING/PAUSED）``inference/actions`` 不消费，
           策略动作既不执行也不缓存。
         """
 
@@ -864,14 +865,20 @@ class SyncRobotClient:
             return
 
         # ── Teleop session gating (design §3.3.1.2) ─────────────────────
-        # While a teleop session is RUNNING only teleop/actions frames are
-        # executed; inference/actions is not consumed (not executed, not
-        # buffered) and policy streaming is left untouched.
-        if self.teleop_enabled and self._teleop_session_state() == "running":
+        # While a teleop session is active (RUNNING or PAUSED) only
+        # teleop/actions frames drive the device: RUNNING executes them,
+        # PAUSED holds the pose, so inference/actions is not consumed in
+        # either state (not executed, not buffered) and policy streaming is
+        # left untouched.
+        teleop_state = (
+            self._teleop_session_state() if self.teleop_enabled else "idle"
+        )
+        if teleop_state in ("running", "paused"):
             self._teleop_dropped_inference += 1
             logger.debug(
-                "Ignoring inference/actions chunk: teleop session RUNNING "
+                "Ignoring inference/actions chunk: teleop session %s "
                 "(ignored=%d)",
+                teleop_state.upper(),
                 self._teleop_dropped_inference,
             )
             return
