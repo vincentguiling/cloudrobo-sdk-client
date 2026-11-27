@@ -750,8 +750,9 @@ class SyncRobotClient:
         """Subscribe ``teleop/actions`` and drive the device during teleop sessions.
 
         会话门控（设计 §3.3.1.2）：
-        - 命令帧任何状态优先处理：start → RUNNING（重复 start 以新会话
-          覆盖），pause → PAUSED，resume → RUNNING，finish/quit → IDLE；
+        - 命令帧任何状态优先处理：start 仅 IDLE 有效（重复 start 拒绝并
+          告警，保留当前会话），pause → PAUSED，resume → RUNNING，
+          finish/quit → IDLE；非法转移忽略并告警；
         - 动作帧仅在 RUNNING 且 ``session_id`` 匹配时执行（经
           ``translator.teleop_to_device`` → ``send_action``），否则丢弃并计数；
         - 会话活跃期（RUNNING/PAUSED）``inference/actions`` 不消费，
@@ -776,25 +777,42 @@ class SyncRobotClient:
         session_id = str(getattr(frame, "session_id", "") or "")
 
         if command:
+            # 会话门控（设计 §3.3.1.2）：start 仅在 IDLE 有效（重复 start
+            # 拒绝并告警，保留当前会话）；非法转移（pause 非 RUNNING、
+            # resume 非 PAUSED、未会话收 finish/quit）忽略并告警。
             with self._teleop_lock:
                 state = self._teleop_state
+                applied = True
                 if command == "start":
-                    self._teleop_state = "running"
-                    self._teleop_session_id = session_id
+                    if state == "idle":
+                        self._teleop_state = "running"
+                        self._teleop_session_id = session_id
+                    else:
+                        applied = False
                 elif command == "pause" and state == "running":
                     self._teleop_state = "paused"
                 elif command == "resume" and state == "paused":
                     self._teleop_state = "running"
-                elif command in ("finish", "quit"):
+                elif command in ("finish", "quit") and state != "idle":
                     self._teleop_state = "idle"
                     self._teleop_session_id = ""
+                else:
+                    applied = False
                 new_state = self._teleop_state
-            logger.info(
-                "teleop %s frame: state %s -> %s",
-                command,
-                state,
-                new_state,
-            )
+            if applied:
+                logger.info(
+                    "teleop %s frame: state %s -> %s",
+                    command,
+                    state,
+                    new_state,
+                )
+            else:
+                logger.warning(
+                    "Teleop %s frame rejected: invalid transition from "
+                    "state %r (ignored and alarmed)",
+                    command,
+                    state,
+                )
             return
 
         # ── Action frame ──────────────────────────────────────────────
@@ -810,10 +828,13 @@ class SyncRobotClient:
                     self._teleop_dropped_actions,
                 )
             return
-        if session_id and session_id != expected_session:
+        if not session_id or session_id != expected_session:
+            # 动作帧必须携带 session_id 且与当前会话一致（空 session_id
+            # 视为不匹配，防止未会话帧误执行）。
             self._teleop_dropped_actions += 1
             logger.warning(
-                "Teleop action frame dropped: session_id %r != %r (dropped=%d)",
+                "Teleop action frame dropped: session_id %r does not match "
+                "session %r (dropped=%d)",
                 session_id,
                 expected_session,
                 self._teleop_dropped_actions,

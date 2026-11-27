@@ -235,6 +235,97 @@ def test_teleop_disabled_does_not_subscribe():
         client.stop()
 
 
+def test_duplicate_start_rejected_keeps_current_session():
+    # 设计 §3.3.1.2：start 仅在 IDLE 有效；重复 start 拒绝并告警，
+    # 保留当前会话（不覆盖 session_id）。
+    client, adapter, _ = _client()
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 1, "session_id": "s-1", "start": {}})
+    )
+    assert client._teleop_session_state() == "running"
+
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 2, "session_id": "s-2", "start": {}})
+    )
+    assert client._teleop_session_state() == "running"
+    assert client._teleop_session_id == "s-1"
+
+    # 原会话动作帧仍执行；新会话动作帧丢弃
+    client._on_teleop_frame(
+        TeleopFrame.from_dict(
+            {
+                "timestamp": 3,
+                "session_id": "s-1",
+                "end_effector_poses": {"names": ["left"], "pose": [LEFT_POSE]},
+            }
+        )
+    )
+    assert _pose_of(adapter) == pytest.approx(LEFT_POSE)
+    client._on_teleop_frame(
+        TeleopFrame.from_dict(
+            {
+                "timestamp": 4,
+                "session_id": "s-2",
+                "end_effector_poses": {"names": ["left"], "pose": [RIGHT_POSE]},
+            }
+        )
+    )
+    assert _pose_of(adapter) == pytest.approx(LEFT_POSE)
+
+
+def test_action_frame_without_session_id_dropped():
+    # 设计 §3.3.1.2：动作帧必须携带与当前会话一致的 session_id；
+    # 空 session_id 视为不匹配，丢弃。
+    client, adapter, _ = _client()
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 1, "session_id": "s-1", "start": {}})
+    )
+    before = _pose_of(adapter)
+    client._on_teleop_frame(
+        TeleopFrame.from_dict(
+            {
+                "timestamp": 2,
+                "end_effector_poses": {"names": ["left"], "pose": [LEFT_POSE]},
+            }
+        )
+    )
+    assert _pose_of(adapter) == pytest.approx(before)
+    assert client._teleop_dropped_actions == 1
+
+
+def test_invalid_transitions_ignored_with_warning(caplog):
+    # 设计 §3.3.1.2：非法转移（未会话 resume、RUNNING 态 resume、IDLE 态
+    # finish）忽略并告警，状态保持不变；RUNNING 态 finish 是合法转移。
+    client, _, _ = _client()
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 1, "session_id": "s-1", "resume": {}})
+    )
+    assert client._teleop_session_state() == "idle"
+
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 2, "session_id": "s-1", "start": {}})
+    )
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 3, "session_id": "s-1", "resume": {}})
+    )
+    assert client._teleop_session_state() == "running"
+
+    # RUNNING 态 finish 合法：回 IDLE
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 4, "session_id": "s-1", "finish": {}})
+    )
+    assert client._teleop_session_state() == "idle"
+
+    # IDLE 态 finish 非法：拒绝并告警
+    client._on_teleop_frame(
+        TeleopFrame.from_dict({"timestamp": 5, "session_id": "s-1", "finish": {}})
+    )
+    assert client._teleop_session_state() == "idle"
+
+    rejected = [r for r in caplog.records if "rejected" in r.getMessage()]
+    assert len(rejected) >= 3
+
+
 def test_teleop_enabled_subscribes_topic():
     client, _, session = _client()
     client.start()
