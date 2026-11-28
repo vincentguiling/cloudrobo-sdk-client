@@ -59,6 +59,14 @@ camera = [
     "hw-cloudrobo-r2c[client]",
     "pyrealsense2>=2.56",
 ]
+teleop = [
+    # Operator side (WebXR HUD + gateway): Zenoh pub/sub + HTTP/WS server.
+    "eclipse-zenoh==1.9.0",
+    "protobuf==7.35.0",
+    "aiohttp>=3.9",
+    "websockets>=12.0",
+    "pyyaml>=6.0",
+]
 ur5e = [
     "scipy>=1.13,<2.0",
     "ur-rtde>=1.5",
@@ -70,7 +78,7 @@ flexiv = [
 ]
 jaka = ["scipy>=1.13,<2.0"]
 a1z = ["python-can>=4.0", "pin"]
-all = ["hw-cloudrobo-r2c[client,cloud-adapter,camera,ur5e,flexiv,jaka,a1z]"]
+all = ["hw-cloudrobo-r2c[client,cloud-adapter,camera,teleop,ur5e,flexiv,jaka,a1z]"]
 
 [dependency-groups]
 dev = [
@@ -108,6 +116,17 @@ agibot_g01_mock = "cloudrobo_r2c.robots.agibot_g01.agibot_g01_mock_adapter:creat
 # Third-party protos may be registered by name; SDK-bundled protos use
 # module:ClassName paths and are not registered here.
 
+[project.entry-points."r2c_sdk.teleop_inputs"]
+# Teleop operator input sources (design §3.3.5.4): built-ins are resolved by
+# name without entry points; this group is for third-party devices.
+webxr = "cloudrobo_r2c.teleop.inputs.webxr_ws:WebXrWsSource"
+mock = "cloudrobo_r2c.teleop.inputs.mock:MockSource"
+
+[project.entry-points."r2c_sdk.teleop_mappings"]
+# Mapping strategies (input sample -> target pose / joints).
+relative_pose = "cloudrobo_r2c.teleop.mapping.relative_pose:RelativePoseMapping"
+passthrough = "cloudrobo_r2c.teleop.mapping.passthrough:PassthroughMapping"
+
 [project.entry-points."r2c_sdk.transformers"]
 
 [tool.setuptools.packages.find]
@@ -115,8 +134,9 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # Ship the config directory (and all subdirectories) inside the installed
-# package so users get the example configs after pip install.
-cloudrobo_r2c = ["config/**/*", "common/protos/*.proto"]
+# package so users get the example configs after pip install. The WebXR HUD
+# page is served by the teleop gateway, so it ships with the package too.
+cloudrobo_r2c = ["config/**/*", "common/protos/*.proto", "webxr/**/*"]
 
 [tool.setuptools.cmdclass]
 compile_protobuf = "cloudrobo_r2c._build_commands.CompileProtobufCommand"
