@@ -1,13 +1,13 @@
-# R2C 遥操操作端接入指南（r2c teleop）
+# R2C 遥操端接入指南（r2c teleop）
 
 本指南对应设计文档《R2C 遥操特性设计》v3.2（并入 r2c 仓库方案，§3.3.6）与实现
-`packages/cloudrobo-r2c/src/cloudrobo_r2c/teleop/`。操作端（遥操操作台）随 r2c 包发布，
+`packages/cloudrobo-r2c/src/cloudrobo_r2c/teleop/`。遥操端随 r2c 包发布，
 无需独立仓库。
 
 ## 快速开始
 
 ```bash
-# 安装（操作端依赖单独一个 extra；机器人端仍用 [client]）
+# 安装（遥操端依赖单独一个 extra；机器人端仍用 [client]）
 pip install hw-cloudrobo-r2c[teleop]
 
 # 1) 启动 Zenoh 路由器（本地）
@@ -158,6 +158,6 @@ session:
 
 ## 与旧独立仓库（cloudrobo-teleop）的关系
 
-操作端已并入 r2c 仓库（2026-11-27 起，v3.0 设计）；cloudrobo-teleop 只读冻结为迁移
+遥操端已并入 r2c 仓库（2026-11-27 起，v3.0 设计）；cloudrobo-teleop 只读冻结为迁移
 来源。WS JSON 协议、TeleopFrame 协议、会话状态机与映射算法 1:1 移植，WebXR HUD 页面
 零改动复用（`packages/cloudrobo-r2c/src/cloudrobo_r2c/webxr/`）。
