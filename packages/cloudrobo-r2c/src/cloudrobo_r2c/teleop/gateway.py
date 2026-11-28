@@ -18,7 +18,6 @@ Runtime pieces (all wired here, each unit-testable on its own):
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -30,8 +29,8 @@ from .heartbeat import HeartbeatPublisher
 from .inputs import InputSample, make_input_source
 from .mapping import create_mapping
 from .pose_math import Pose
-from .session import IDLE, PAUSED, RUNNING, FINISHED, OperatorSession, SessionEvent
-from .state_current import PoseSnapshot, StateCurrentReceiver
+from .session import FINISHED, IDLE, RUNNING, OperatorSession, SessionEvent
+from .state_current import StateCurrentReceiver
 from .transport import ZenohTransport
 
 WEBXr_DIR = Path(__file__).resolve().parent.parent / "webxr"

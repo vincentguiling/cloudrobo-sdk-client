@@ -3,7 +3,6 @@
 import asyncio
 
 import pytest
-
 from cloudrobo_r2c.teleop.inputs import make_input_source
 from cloudrobo_r2c.teleop.pose_math import Pose
 

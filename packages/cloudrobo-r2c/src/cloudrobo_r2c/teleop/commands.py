@@ -13,7 +13,7 @@ only new sequences (latest-command-wins, same as the C# receiver).
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 

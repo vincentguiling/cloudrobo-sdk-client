@@ -1,6 +1,5 @@
 """Operator session state machine tests (local + cloud modes)."""
 
-import pytest
 
 from cloudrobo_r2c.teleop.session import (
     FINISHED,
@@ -37,19 +36,26 @@ def test_local_two_phase_start():
 
 def test_local_pause_resume_toggle():
     s = OperatorSession()
-    press(s, 100.0); release(s, 150.0)  # start -> PAUSED
-    press(s, 200.0); release(s, 250.0)  # -> RUNNING
-    assert s.state == RUNNING
-    press(s, 300.0); release(s, 350.0)  # short press -> PAUSED
+    press(s, 100.0)  # start
+    release(s, 150.0)
     assert s.state == PAUSED
-    press(s, 400.0); release(s, 450.0)  # short press -> RUNNING
+    press(s, 200.0)  # resume
+    release(s, 250.0)
+    assert s.state == RUNNING
+    press(s, 300.0)  # short press -> PAUSED
+    release(s, 350.0)
+    assert s.state == PAUSED
+    press(s, 400.0)  # short press -> RUNNING
+    release(s, 450.0)
     assert s.state == RUNNING
 
 
 def test_local_long_press_finishes():
     s = OperatorSession()
-    press(s, 100.0); release(s, 150.0)
-    press(s, 200.0); release(s, 250.0)
+    press(s, 100.0)
+    release(s, 150.0)
+    press(s, 200.0)
+    release(s, 250.0)
     assert s.state == RUNNING
     press(s, 300.0)
     # long press >= 500 ms settles finish while held
@@ -64,8 +70,10 @@ def test_local_long_press_finishes():
 
 def test_finished_allows_new_start_after_full_release():
     s = OperatorSession()
-    press(s, 100.0); release(s, 150.0)
-    press(s, 200.0); release(s, 250.0)
+    press(s, 100.0)
+    release(s, 150.0)
+    press(s, 200.0)
+    release(s, 250.0)
     press(s, 300.0)
     s.on_buttons(False, True, 850.0)  # finish
     release(s, 900.0)                 # clear require_all_released

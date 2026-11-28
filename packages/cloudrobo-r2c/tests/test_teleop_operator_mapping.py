@@ -1,12 +1,10 @@
 """Operator mapping tests: relative pose (clutch/reach/EMA) + passthrough."""
 
-import math
 
 import pytest
-
 from cloudrobo_r2c.teleop.mapping import create_mapping
 from cloudrobo_r2c.teleop.mapping.passthrough import PassthroughMapping
-from cloudrobo_r2c.teleop.pose_math import Pose, compose, inverse
+from cloudrobo_r2c.teleop.pose_math import Pose
 
 
 def test_relative_pose_initial_output_equals_base():

@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Optional
+from typing import Any, Optional
 
 from .config import StateCurrentConfig
 from .pose_math import Pose, euler_to_quaternion

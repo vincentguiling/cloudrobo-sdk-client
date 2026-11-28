@@ -1,7 +1,6 @@
 """TeleopFrame construction + roundtrip + extensions tests."""
 
 import pytest
-
 from cloudrobo_r2c.common.models.generated import teleop_pb2
 from cloudrobo_r2c.teleop.frame_builder import (
     build_action_frame,
