@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import click
 
+from .teleop.cli import teleop
+
 
 @click.group()
 def r2c() -> None:
@@ -29,3 +31,7 @@ def client(argv: tuple[str, ...]) -> None:
     from .cloudroboclient import main as client_main
 
     client_main(list(argv))
+
+
+# 遥操操作端（WebXR HUD + mock 设备）：cloudrobo r2c teleop gateway|mock|bench|...
+r2c.add_command(teleop)

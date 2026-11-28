@@ -1,0 +1,1168 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8">
+  <title>CloudRobo Quest Teleop</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { margin: 0; background: #101018; color: #cfd2e0; font-family: system-ui, sans-serif; }
+    #hud { position: fixed; top: 10px; left: 10px; z-index: 5; font-size: 13px;
+           background: rgba(0,0,0,0.55); padding: 8px 10px; border-radius: 8px; }
+    #hud b { color: #8fd0ff; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><b>CloudRobo Quest 遥操</b></div>
+    <div id="status">未连接</div>
+    <div id="rate">--</div>
+  </div>
+
+  <script type="module">
+    import * as THREE from './lib/three.module.js';
+    import { VRButton } from './lib/VRButton.js';
+    import {
+      identityAdj, applyAdjust, rotateAdjust, resetAdjust, canAdjust,
+      isIdentityAdj, quatFromMat3, quatContinuityFix
+    } from './pose-adjust.js';
+
+    const wsUrl = `ws://${location.host}/ws`;
+    let ws = null;
+    let wsReady = false;
+    let sent = 0;
+    let lastStat = performance.now();
+
+    // --- gateway 推送的 per-hand 展示状态 ---
+    // state: nodata（未收到 state/current）| offline（收到但该侧手柄未在线/位姿缺失）
+    //        | online（手柄在线未跟随）| following（grip 跟随中）
+    // pose: 7D [tx,ty,tz,qx,qy,qz,qw] —— idle/finish/pause 为 state/current
+    //       末端位姿，running 为网关发送的 teleop 动作位姿
+    const HAND_STATE_COLOR = {
+      nodata: '#44506a',   // 灰暗（展示 "--"）
+      offline: '#8a93a6',  // 灰
+      online: '#ffd97a',   // 黄
+      following: '#7fe39a' // 绿
+    };
+    // 左右手固定基色（手柄环与轨迹点共用；左手绿、右手橙，便于区分左右）
+    const HAND_BASE_COLOR = { left: 0x55ff88, right: 0xff9944 };
+    function dimColor(hex, factor) {
+      const r = ((hex >> 16) & 0xff) * factor;
+      const g = ((hex >> 8) & 0xff) * factor;
+      const b = (hex & 0xff) * factor;
+      return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
+    }
+    let gwState = 'IDLE', gwSession = '';
+    let gwCloud = false; // 云端控制会话（网关 --bundle）：start/finish/quit 由云端下发
+    let gwHands = {
+      left: { state: 'nodata', pose: null },
+      right: { state: 'nodata', pose: null }
+    };
+    // 位姿变化量：RUNNING 时相对切入 running 时刻（网关推 Running，逻辑
+    // 比较统一用大写）；非 RUNNING 时显示 --。
+    // Δpos：手柄位姿相对基准的增量（手柄基准系表达，纯观测，与校准无关）；
+    // Δeuler/Δquat：手柄旋转增量在手柄切入时刻自身坐标系中的表达。
+    const poseDelta = {
+      left: { pos: [0, 0, 0], euler: [0, 0, 0], quat: [0, 0, 0, 0], hasBase: false },
+      right: { pos: [0, 0, 0], euler: [0, 0, 0], quat: [0, 0, 0, 0], hasBase: false }
+    };
+    const pressBase = {
+      left: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), has: false },
+      right: { pos: new THREE.Vector3(), quat: new THREE.Quaternion(), has: false }
+    };
+    // 头显朝向缓存（动画循环每帧从相机复制）
+    const headQuat = new THREE.Quaternion();
+    const headQuatInv = new THREE.Quaternion();
+    // 手柄当前位姿缓存（动画循环每帧从控制器复制；原始 XR 位姿，仅展示）
+    const ctrlPosNow = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+    const ctrlQuatNow = { left: new THREE.Quaternion(), right: new THREE.Quaternion() };
+    // 调整后（生效）的手柄位姿：位置/旋转增量在手柄基准系内应用变换矩阵，
+    // 再按基准重组（发送到网关/轨迹/参考系都用它）
+    const ctrlPosEff = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+    const ctrlQuatEff = { left: new THREE.Quaternion(), right: new THREE.Quaternion() };
+    // 该手当前的位置/旋转增量（手柄基准系、已应用变换矩阵；Δ 行显示用）
+    // applyAdjust 的基准参数缓冲（避免每帧分配）
+    const basePosArr = { left: [0, 0, 0], right: [0, 0, 0] };
+    const baseQuatArr = { left: [0, 0, 0, 1], right: [0, 0, 0, 1] };
+    // 眼镜朝向数组缓冲（位置增量的参考系）
+    const headQArr = [0, 0, 0, 1];
+    // 每手变换矩阵（非 RUNNING 可调，RUNNING 锁定）：位置变换 posR 与姿态变换
+    // rotR 直接作用于手柄位姿（p_eff = posR·p、q_eff = rotR⊗q），见 pose-adjust.js。
+    // 网关视角是恒定的增量重定向，进入相对映射后等效于校准手柄运动方向。
+    // 自动保存到 localStorage（Quest 浏览器持久化），下次打开页面自动读取；
+    // "恢复启动"按钮回到本次页面打开时加载的配置（可为单位变换或上次保存值）。
+    const adjust = { left: identityAdj(), right: identityAdj() };
+    const ADJ_STORE_KEY = 'hud-pose-adjust-v1';
+    function loadAdjustFromStore() {
+      try {
+        const raw = localStorage.getItem(ADJ_STORE_KEY);
+        if (!raw) return null;
+        const d = JSON.parse(raw);
+        const out = {};
+        for (const side of ['left', 'right']) {
+          const s = d && d[side];
+          if (!s || !Array.isArray(s.posR) || s.posR.length !== 9
+            || !Array.isArray(s.rotR) || s.rotR.length !== 9) continue;
+          const valid = s.posR.concat(s.rotR).every((v) => typeof v === 'number' && Number.isFinite(v));
+          if (!valid) continue;
+          out[side] = { posR: s.posR.slice(), rotR: s.rotR.slice() };
+        }
+        return Object.keys(out).length ? out : null;
+      } catch (e) {
+        return null; // 存储不可用/损坏时按未配置处理
+      }
+    }
+    const storedAdjust = loadAdjustFromStore();
+    for (const side of ['left', 'right']) {
+      if (storedAdjust && storedAdjust[side]) {
+        adjust[side] = storedAdjust[side];
+      }
+    }
+    // 启动时配置快照（"恢复启动"的还原点）
+    const startupAdjust = JSON.parse(JSON.stringify(adjust));
+    function saveAdjustToStore() {
+      try {
+        localStorage.setItem(ADJ_STORE_KEY, JSON.stringify({
+          left: { posR: adjust.left.posR, rotR: adjust.left.rotR },
+          right: { posR: adjust.right.posR, rotR: adjust.right.rotR }
+        }));
+      } catch (e) { /* 隐私模式等场景写失败不影响运行 */ }
+    }
+    // 云端下发的每手变换矩阵（bundle 模式 start 帧）：seq 变化时覆盖 adjust
+    // 的 posR/rotR（未下发的侧保持当前值），并随本地校准一起持久化。
+    let lastCloudAdjustSeq = 0;
+    function applyCloudAdjust(ca) {
+      if (!ca || ca.seq === lastCloudAdjustSeq) return;
+      lastCloudAdjustSeq = ca.seq;
+      const mat3 = (a) => Array.isArray(a) && a.length === 9
+        && a.every((v) => typeof v === 'number' && Number.isFinite(v));
+      let changed = false;
+      for (const side of ['left', 'right']) {
+        const m = ca[side];
+        if (!m) continue;
+        if (mat3(m.posR)) { adjust[side].posR = m.posR.slice(); changed = true; }
+        if (mat3(m.rotR)) { adjust[side].rotR = m.rotR.slice(); changed = true; }
+      }
+      if (changed) saveAdjustToStore();
+    }
+    const ctrlOnlineNow = { left: false, right: false };
+    // 切入时刻手柄姿态的逆（Δeuler/Δquat 在切入时刻手柄坐标系中表达）
+    const runningBaseQuatInv = { left: null, right: null };
+    let prevGwState = 'IDLE';
+
+    function isRunning() {
+      return gwState.toUpperCase() === 'RUNNING';
+    }
+
+    function connect() {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => { wsReady = true; document.getElementById('status').textContent = 'WS 已连接'; };
+      ws.onclose = () => { wsReady = false; document.getElementById('status').textContent = 'WS 断开，3s 重连'; setTimeout(connect, 3000); };
+      ws.onerror = () => { try { ws.close(); } catch (e) {} };
+      ws.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          if (d.type === 'gateway_status') {
+            const prevState = gwState;
+            const prevSession = gwSession;
+            gwState = d.state || 'IDLE';
+            gwSession = d.session || '';
+            gwCloud = !!d.cloud;
+            applyCloudAdjust(d.cloud_adjust);
+            // 轨迹：切入 running（pause→resume / finish→start）或新 session
+            // 时清空（切出时保留，不再追加）。网关推 'Running'，unified 大写比较。
+            const enteredRunning = prevState.toUpperCase() !== 'RUNNING' && isRunning();
+            const newSession = isRunning() && d.session && d.session !== prevSession;
+            if (enteredRunning || newSession) {
+              clearTrail('left');
+              clearTrail('right');
+              poseDelta.left.hasBase = false;
+              poseDelta.right.hasBase = false;
+              // 记录切入时刻的原始手柄位姿作为增量基准（位置/旋转增量都表达在
+              // 手柄自身坐标系，见 pose-adjust.js）
+              for (const side of ['left', 'right']) {
+                pressBase[side].pos.copy(ctrlPosNow[side]);
+                pressBase[side].quat.copy(ctrlQuatNow[side]);
+                pressBase[side].has = ctrlOnlineNow[side];
+                runningBaseQuatInv[side] = pressBase[side].quat.clone().invert();
+                poseDelta[side].hasBase = true;
+              }
+            }
+            for (const side of ['left', 'right']) {
+              const hand = d[side] || { state: 'nodata', pose: null };
+              // 增量基准固定为进入 running 时的位姿（见下），不采纳网关回传的锚，
+              // 避免变换矩阵在手柄快速转动时随锚切换造成位姿突变
+              if (isRunning() && pressBase[side].has) {
+                // Δpos / Δeuler / Δquat：手柄位姿相对基准（手柄基准系）的增量——纯观测，
+                // 与中央面板的变换校准无关
+                const dp = new THREE.Vector3().subVectors(ctrlPosNow[side], pressBase[side].pos);
+                dp.applyQuaternion(runningBaseQuatInv[side]);
+                poseDelta[side].pos = [dp.x, dp.y, dp.z];
+                const qLocal = runningBaseQuatInv[side].clone().multiply(ctrlQuatNow[side]);
+                poseDelta[side].quat = [qLocal.x, qLocal.y, qLocal.z, qLocal.w];
+                poseDelta[side].euler = quatToEuler(poseDelta[side].quat);
+              }
+              gwHands[side] = hand;
+            }
+            drawHud();
+          }
+        } catch {}
+      };
+      setInterval(() => { if (wsReady) ws.send('{"ping":true}'); }, 5000);
+    }
+    connect();
+
+    const scene = new THREE.Scene();
+    // VR 背景透明（Quest passthrough）：canvas 走 alpha 通道、清屏 alpha=0，
+    // VRButton 以 immersive-ar 建会话（Quest 自动开穿透），现实世界透过背景
+    // 显示；桌面无 XR 时由 body 背景色兜底，观感不变。
+    scene.background = null;
+    const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 50);
+    scene.add(camera);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(0x000000, 0);
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;
+    // immersive-ar（穿透）会话不支持 local-floor 时会导致 reference space 建不起来，
+    // 手柄 pose 取不到（环停在原点不动）。local 在 AR/VR 都可用，且相对控制只需要
+    // 相对量，故统一用 local。
+    renderer.xr.setReferenceSpaceType('local');
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    const grid = new THREE.GridHelper(10, 20, 0x334455, 0x223344);
+    grid.position.y = -1.2;
+    scene.add(grid);
+
+    // --- 三轴坐标系（实体几何：圆柱轴线 + 圆锥箭头；ArrowHelper 的 1px
+    //     线宽在 VR 中几乎不可见，这里用带粗细的 Mesh） ---
+    function makeAxes(size, thickness) {
+      const g = new THREE.Group();
+      const mk = (dir, color) => {
+        const dirV = new THREE.Vector3(...dir);
+        const cylLen = size * 0.8;
+        const cyl = new THREE.Mesh(
+          new THREE.CylinderGeometry(thickness, thickness, cylLen, 8),
+          new THREE.MeshBasicMaterial({ color }));
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dirV);
+        cyl.quaternion.copy(q);
+        cyl.position.copy(dirV.clone().multiplyScalar(cylLen / 2));
+        g.add(cyl);
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(thickness * 2.6, size * 0.3, 10),
+          new THREE.MeshBasicMaterial({ color }));
+        cone.quaternion.copy(q);
+        cone.position.copy(dirV.clone().multiplyScalar(size * 0.85));
+        g.add(cone);
+      };
+      mk([1, 0, 0], 0xff5566); // X 红
+      mk([0, 1, 0], 0x55ff88); // Y 绿
+      mk([0, 0, 1], 0x5599ff); // Z 蓝
+      return g;
+    }
+
+    // --- 开始时参考系（grip 按下时刻的手柄位姿，按实体的三轴显示） ---
+    const refL = makeAxes(0.09, 0.003);
+    const refR = makeAxes(0.09, 0.003);
+    refL.visible = false;
+    refR.visible = false;
+    scene.add(refL);
+    scene.add(refR);
+
+    // --- VR 轨迹（running 期间的手柄运动路径；切入清除，切出保留） ---
+    // 从手柄位置出发、跟随手柄移动；用实体小球点列而非 THREE.Line：
+    // WebGL 下 linewidth 恒为 1px，Quest 上几乎看不见。
+    const TRAIL_MAX = 4096;
+    const TRAIL_BALL = 0.012;   // 球半径（米）
+    function makeTrail(color) {
+      const geom = new THREE.SphereGeometry(TRAIL_BALL, 6, 5);
+      const mat = new THREE.MeshBasicMaterial({ color });
+      const inst = new THREE.InstancedMesh(geom, mat, TRAIL_MAX);
+      inst.count = 0;
+      inst.frustumCulled = false;
+      scene.add(inst);
+      return { inst, n: 0, last: null, matrix: new THREE.Matrix4() };
+    }
+    const trailL = makeTrail(HAND_BASE_COLOR.left);
+    const trailR = makeTrail(HAND_BASE_COLOR.right);
+
+    function clearTrail(side) {
+      const t = side === 'left' ? trailL : trailR;
+      t.n = 0;
+      t.last = null;
+      t.inst.count = 0;
+    }
+
+    // 追加一个轨迹点（手柄世界坐标，每帧调用；6mm 去重）
+    function appendTrailAt(side, pos) {
+      const t = side === 'left' ? trailL : trailR;
+      if (t.last) {
+        const dx = pos.x - t.last[0], dy = pos.y - t.last[1], dz = pos.z - t.last[2];
+        if (dx * dx + dy * dy + dz * dz < 0.000036) return;
+      }
+      if (t.n >= TRAIL_MAX) return; // 满：保留已有轨迹
+      t.matrix.makeTranslation(pos.x, pos.y, pos.z);
+      t.inst.setMatrixAt(t.n, t.matrix);
+      t.n++;
+      t.last = [pos.x, pos.y, pos.z];
+      t.inst.count = t.n;
+      t.inst.instanceMatrix.needsUpdate = true;
+    }
+
+    // --- VR 3D HUD：中央窄面板 + 左右手面板（CanvasTexture, 挂相机跟随视角） ---
+    const hudCanvas = document.createElement('canvas');
+    hudCanvas.width = 1024; hudCanvas.height = 512;
+    const hudCtx = hudCanvas.getContext('2d');
+    const hudTex = new THREE.CanvasTexture(hudCanvas);
+    const hudPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.52, 0.26),
+      new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, side: THREE.DoubleSide })
+    );
+    hudPlane.position.set(0, 0, -0.45);
+    camera.add(hudPlane);
+
+    let hudGripL = false, hudGripR = false;
+    let xrPoseMiss = 0; // 每秒统计的 grip pose 获取失败次数（诊断用）
+    let hudTrigL = 0, hudTrigR = 0;
+
+    function handState(side) {
+      return (gwHands[side] && gwHands[side].state) || 'nodata';
+    }
+
+    // --- 中央面板：状态 / Session / 手柄矩阵（查看与调整）/ 操作提示 ---
+    // 可点击按钮每帧重建注册表（buttonRects），命中后由 activateButton 应用旋转
+    let buttonRects = [];
+    let hoverCanvas = null; // 指针/射线当前命中的 canvas 坐标（悬停高亮）
+    function drawButton(label, x, y, w, h, enabled, props) {
+      const hov = !!hoverCanvas
+        && hoverCanvas.x >= x && hoverCanvas.x <= x + w
+        && hoverCanvas.y >= y && hoverCanvas.y <= y + h;
+      hudCtx.fillStyle = !enabled ? 'rgba(40,48,62,0.45)'
+        : hov ? 'rgba(95,150,205,0.9)' : 'rgba(55,82,118,0.75)';
+      hudCtx.fillRect(x, y, w, h);
+      hudCtx.strokeStyle = !enabled ? '#283345' : hov ? '#bfe4ff' : '#3f6a96';
+      hudCtx.strokeRect(x, y, w, h);
+      hudCtx.textAlign = 'center';
+      hudCtx.font = 'bold 11px sans-serif';
+      hudCtx.fillStyle = !enabled ? '#4e5a6e' : '#dfeeff';
+      hudCtx.fillText(label, x + w / 2, y + h - 5);
+      hudCtx.textAlign = 'left';
+      if (enabled) {
+        buttonRects.push(Object.assign({ x0: x, y0: y, x1: x + w, y1: y + h }, props));
+      }
+    }
+
+    // 每行 6 个按钮：X−/X+/Y−/Y+/Z−/Z+（每次 90°，世界轴）
+    function drawAxisButtons(side, part, x, y) {
+      const adjustable = canAdjust(gwState);
+      [['X', -1], ['X', 1], ['Y', -1], ['Y', 1], ['Z', -1], ['Z', 1]].forEach(([axis, sign], i) => {
+        drawButton(axis + (sign < 0 ? '−' : '+'), x + i * 26, y, 24, 16, adjustable,
+          { side, part, axis, sign });
+      });
+    }
+
+    // 2D 迷你坐标系（canvas 绘制）：显示增量变换矩阵把标准轴转到哪里（手柄基准系）。
+    // 轴向量 = m 的列（世界系下 posR 作用后各标准轴的方向）；亮度按速度分量调制。
+    // vScore: [vx, vy, vz]（已归一化 0..1），分量越大对应轴越亮。
+    const MINI_AXIS_COLOR = { X: '#ff5566', Y: '#55ff88', Z: '#5599ff' };
+    function drawMiniAxes(cx, cy, size, m, vScore) {
+      // 列向量：X 轴 -> (m0,m3,m6)，Y 轴 -> (m1,m4,m7)，Z 轴 -> (m2,m5,m8)
+      const cols = [
+        ['X', [m[0], m[3], m[6]]],
+        ['Y', [m[1], m[4], m[7]]],
+        ['Z', [m[2], m[5], m[8]]]
+      ];
+      // canvas 屏幕投影：世界 x -> 屏幕 x；世界 y -> 屏幕 -y；世界 z -> 屏幕 -y
+      // （相机朝 -z 看，z 轴画成向上）透视近似：分母 1 + 0.35*z 做轻微透视收缩
+      for (const [ax, v] of cols) {
+        const persp = 1 / (1 + 0.35 * v[2]);
+        const ex = cx + v[0] * size * persp;
+        const ey = cy - (v[1] + 0.55 * v[2]) * size * persp;
+        const score = vScore ? Math.max(0.25, Math.min(1, vScore[ax])) : 1;
+        hudCtx.globalAlpha = score;
+        hudCtx.strokeStyle = MINI_AXIS_COLOR[ax];
+        hudCtx.lineWidth = 1 + 1.6 * score;
+        hudCtx.beginPath();
+        hudCtx.moveTo(cx, cy);
+        hudCtx.lineTo(ex, ey);
+        hudCtx.stroke();
+        // 轴端小圆点 + 轴名字母
+        hudCtx.fillStyle = MINI_AXIS_COLOR[ax];
+        hudCtx.beginPath();
+        hudCtx.arc(ex, ey, 1.6 + score, 0, Math.PI * 2);
+        hudCtx.fill();
+        hudCtx.font = 'bold 9px sans-serif';
+        hudCtx.fillText(ax, ex + (v[0] >= 0 ? 3 : -9), ey + (v[1] + 0.55 * v[2] >= 0 ? -3 : 8));
+      }
+      hudCtx.globalAlpha = 1;
+      hudCtx.lineWidth = 1;
+      // 原点小点
+      hudCtx.fillStyle = '#8a93a6';
+      hudCtx.beginPath();
+      hudCtx.arc(cx, cy, 1.4, 0, Math.PI * 2);
+      hudCtx.fill();
+    }
+
+    // 一只手一列：显示该手两个变换矩阵（位置变换 posR / 姿态变换 rotR，
+    // 按钮把对应矩阵绕世界轴旋转 90°；运行时 p_eff = posR·p、q_eff = rotR⊗q。
+    // 每个矩阵右侧有迷你坐标系显示变换关系；轴亮度按当前速度/角速度分量调制。
+    function drawHandMatrix(side, x, y) {
+      const base = side === 'left' ? '#7fe39a' : '#ffc07a';
+      const adj = adjust[side];
+      const biased = !isIdentityAdj(adj);
+      const adjustable = canAdjust(gwState);
+      const vel = axisBrightness[side];
+      hudCtx.textAlign = 'left';
+      hudCtx.font = 'bold 14px sans-serif';
+      hudCtx.fillStyle = base;
+      hudCtx.fillText(side === 'left' ? '左手' : '右手', x, y);
+      hudCtx.font = '11px sans-serif';
+      hudCtx.fillStyle = biased ? '#8fd0ff' : '#556074';
+      hudCtx.fillText(biased ? '已调整' : '原始', x + 46, y);
+
+      for (const [label, part, m, by, score] of [
+        ['位置变换', 'pos', adj.posR, y + 36, vel ? vel.lin : null],
+        ['姿态变换', 'rot', adj.rotR, y + 120, vel ? vel.ang : null]
+      ]) {
+        hudCtx.font = '12px sans-serif';
+        hudCtx.fillStyle = '#6a7a90';
+        hudCtx.fillText(label, x, by);
+        // 迷你坐标系贴列右缘（矩阵值列距收窄避让）
+        drawMiniAxes(x + 149, by + 26, 12, m, score);
+        hudCtx.font = '11px sans-serif';
+        for (let r = 0; r < 3; r++) {
+          hudCtx.fillStyle = '#8a93a6';
+          hudCtx.fillText('R' + (r + 1), x + 30, by + 16 + r * 14);
+          hudCtx.fillStyle = '#cfd2e0';
+          for (let c = 0; c < 3; c++) {
+            hudCtx.fillText(m[r * 3 + c].toFixed(2), x + 46 + c * 30, by + 16 + r * 14);
+          }
+        }
+        drawAxisButtons(side, part, x, by + 62);
+      }
+      drawButton('重置', x, y + 204, 40, 15, adjustable, { side, reset: true });
+      drawButton('恢复启动', x + 46, y + 204, 64, 15, adjustable, { side, restore: true });
+    }
+
+    function drawCenterPanel(x0, w) {
+      const h = 512;
+      hudCtx.fillStyle = 'rgba(10,12,20,0.92)';
+      hudCtx.fillRect(x0, 0, w, h);
+      hudCtx.strokeStyle = '#2a3a4f';
+      hudCtx.strokeRect(x0, 0, w, h);
+
+      hudCtx.textAlign = 'center';
+      hudCtx.font = 'bold 28px sans-serif';
+      hudCtx.fillStyle = isRunning() ? '#7fe39a' : gwState.toUpperCase() === 'PAUSED' ? '#ffd97a' : '#98a0b3';
+      hudCtx.fillText('状态: ' + gwState + (gwCloud ? '（云端）' : ''), x0 + w / 2, 54);
+
+      hudCtx.font = '17px sans-serif';
+      hudCtx.fillStyle = '#6a7a90';
+      hudCtx.fillText('Session', x0 + w / 2, 92);
+      hudCtx.fillStyle = '#8fd0ff';
+      hudCtx.fillText(gwSession || '--', x0 + w / 2, 118);
+
+      const adjustable = canAdjust(gwState);
+      hudCtx.textAlign = 'left';
+      hudCtx.font = 'bold 15px sans-serif';
+      hudCtx.fillStyle = '#cfd2e0';
+      hudCtx.fillText('手柄变换矩阵', x0 + 10, 150);
+      hudCtx.font = '12px sans-serif';
+      hudCtx.fillStyle = adjustable ? '#7fe39a' : '#ff9f7a';
+      hudCtx.fillText(adjustable ? '可调（非RUNNING）' : 'RUNNING 锁定', x0 + 104, 150);
+
+      drawHandMatrix('left', x0 + 8, 170);
+      drawHandMatrix('right', x0 + 176, 170);
+
+      hudCtx.textAlign = 'center';
+      hudCtx.font = '14px sans-serif';
+      hudCtx.fillStyle = '#4a5a70';
+      // 云端控制会话（--bundle）：start/finish/quit 由云端下发，本地按键不再提示。
+      // FINISHED 为操作端展示终态（C13）：本地模式可用 B/Y 重新开始；bundle 模式
+      // 无本地 start/quit，只能等待云端下发新会话/quit（本地无 quit 入口）。
+      const finished = gwState.toUpperCase() === 'FINISHED';
+      const tips = gwCloud ? [
+        finished ? '会话已结束：等待云端下发新会话' : '云端控制：start/finish/quit 由云端下发',
+        'B/Y 短按 = 暂停/恢复',
+        'Grip = 跟随；A/X、拇指杆 = 透传'
+      ] : finished ? [
+        '会话已结束：B/Y 松开重新开始',
+        'Grip = 跟随；A/X、拇指杆 = 透传'
+      ] : [
+        'B/Y 松开 = 开始',
+        'B/Y 短按 = 暂停/恢复',
+        'B/Y 长按 = 完成',
+        'Grip = 跟随；A/X、拇指杆 = 透传'
+      ];
+      tips.forEach((tip, i) => hudCtx.fillText(tip, x0 + w / 2, 400 + i * 19));
+
+      hudCtx.font = '12px sans-serif';
+      hudCtx.fillStyle = '#44506a';
+      hudCtx.fillText('位置/姿态变换直接作用于手柄位姿', x0 + w / 2, 470);
+      hudCtx.fillText('按轴旋转 90°；自动保存，可恢复启动配置', x0 + w / 2, 490);
+      hudCtx.textAlign = 'left';
+    }
+
+    // --- 左/右手面板：Grip、扳机、pos/euler/quat 当前值 + Δ（相对上次） ---
+    function drawHandPanel(side, x0, w) {
+      const hs = handState(side);
+      const hand = gwHands[side];
+      const color = HAND_STATE_COLOR[hs] || HAND_STATE_COLOR.nodata;
+      hudCtx.fillStyle = 'rgba(10,12,20,0.92)';
+      hudCtx.fillRect(x0, 0, w, 512);
+      hudCtx.strokeStyle = '#2a3a4f';
+      hudCtx.strokeRect(x0, 0, w, 512);
+
+      hudCtx.textAlign = 'left';
+      hudCtx.font = 'bold 22px sans-serif';
+      hudCtx.fillStyle = color;
+      hudCtx.fillText(side === 'left' ? '左手' : '右手', x0 + 16, 40);
+      hudCtx.font = '15px sans-serif';
+      hudCtx.fillStyle = color;
+      // 状态文字：网关给的 reason 区分"没数据 / 有数据但缺末端位姿 / 手柄未在线"
+      const handReason = (gwHands[side] && gwHands[side].reason) || '';
+      const stateText = handReason === 'no_pose' ? '缺末端位姿(poses)'
+        : handReason === 'no_data' ? '无 state/current'
+        : ({ nodata: '--', offline: '未在线/无位姿', online: '在线 未跟随', following: '跟随中' }[hs] || hs);
+      hudCtx.fillText(stateText, x0 + 90, 40);
+
+      const grip = side === 'left' ? hudGripL : hudGripR;
+      const trig = side === 'left' ? hudTrigL : hudTrigR;
+      hudCtx.font = '17px sans-serif';
+      hudCtx.fillStyle = '#6a7a90';
+      hudCtx.fillText('Grip', x0 + 16, 84);
+      hudCtx.fillStyle = grip ? '#7fe39a' : '#ff9f7a';
+      hudCtx.fillText(grip ? '✓ 按下' : '未按下', x0 + 80, 84);
+      hudCtx.fillStyle = '#6a7a90';
+      hudCtx.fillText('扳机', x0 + 230, 84);
+      hudCtx.fillStyle = '#cfd2e0';
+      hudCtx.fillText(trig != null ? trig.toFixed(2) : '--', x0 + 290, 84);
+
+      // 表头 + 手柄位姿（仅展示：hpos/hquat 为 XR 原始手柄位姿，不参与调整）
+      hudCtx.font = '13px sans-serif';
+      hudCtx.fillStyle = '#4a5a70';
+      hudCtx.fillText('位姿', x0 + 16, 118);
+      hudCtx.fillStyle = '#8a93a6';
+      hudCtx.fillText('h=手柄（仅展示）', x0 + 210, 118);
+
+      // 8 行：Δ（变化，放对应行上面）+ 当前值 + 手柄原始位姿（hpos/hquat）
+      //   Δpos / pos / Δeuler / euler / Δquat / quat / hpos / hquat
+      // Δ 为 RUNNING 时相对切入 running 时刻的变化；非 RUNNING 显示 --
+      // hpos/hquat 为手柄自身位姿（仅展示，不参与调整；调整见中间面板）
+      const hasPose = !!(hand && hand.pose && hand.pose.length >= 7);
+      const p = hasPose ? hand.pose : [null, null, null, null, null, null, null];
+      const d = poseDelta[side];
+      const showDelta = isRunning() && d.hasBase;
+      const dash = ['--', '--', '--'];
+      const dash4 = ['--', '--', '--', '--'];
+      const ctrlOn = ctrlOnlineNow[side];
+      const rows = [
+        ['Δpos', showDelta && hasPose ? d.pos : dash, 2, '#8fd0ff'],
+        ['pos', hasPose ? [p[0], p[1], p[2]] : dash, 2, color],
+        ['Δeuler', showDelta && hasPose ? d.euler : dash, 2, '#8fd0ff'],
+        ['euler', hasPose ? quatToEuler([p[3], p[4], p[5], p[6]]) : dash, 2, color],
+        ['Δquat', showDelta && hasPose ? d.quat : dash4, 2, '#8fd0ff'],
+        ['quat', hasPose ? [p[3], p[4], p[5], p[6]] : dash4, 2, color],
+        ['hpos', ctrlOn ? [ctrlPosNow[side].x, ctrlPosNow[side].y, ctrlPosNow[side].z] : dash, 2, '#b6bdcf'],
+        ['hquat', ctrlOn ? [ctrlQuatNow[side].x, ctrlQuatNow[side].y, ctrlQuatNow[side].z, ctrlQuatNow[side].w] : dash4, 2, '#b6bdcf']
+      ];
+      hudCtx.font = '14px sans-serif';
+      rows.forEach(([label, vals, digits, rowColor], i) => {
+        const y = 150 + i * 26;
+        hudCtx.fillStyle = rowColor;
+        hudCtx.fillText(label, x0 + 14, y);
+        vals.forEach((v, k) => {
+          const s = typeof v === 'number'
+            ? (label.startsWith('Δ') && v >= 0 ? '+' + v.toFixed(digits) : v.toFixed(digits))
+            : v; // '--'
+          // 4 值行（quat/Δquat）带宽 + 号会超出 342px 面板，收紧间距
+          hudCtx.fillText(s, x0 + 82 + k * (vals.length === 4 ? 68 : 78), y);
+        });
+      });
+
+      hudCtx.font = '13px sans-serif';
+      hudCtx.fillStyle = '#44506a';
+      if (!hasPose) {
+        hudCtx.fillStyle = color;
+        hudCtx.fillText(hs === 'nodata' ? '机器人位姿 --' : '机器人位姿 (--)', x0 + 14, 372);
+      }
+      hudCtx.fillStyle = '#44506a';
+      hudCtx.fillText('三轴=开始时参考系', x0 + 14, 490);
+    }
+
+    function drawHud() {
+      buttonRects = [];
+      hudCtx.clearRect(0, 0, 1024, 512);
+      drawHandPanel('left', 0, 342);
+      drawCenterPanel(342, 340);
+      drawHandPanel('right', 682, 342);
+      hudTex.needsUpdate = true;
+    }
+
+    // --- 手柄矩阵调整：按钮命中与激活（canvas 坐标系 1024x512） ---
+    function hitButton(cx, cy) {
+      for (const b of buttonRects) {
+        if (cx >= b.x0 && cx <= b.x1 && cy >= b.y0 && cy <= b.y1) return b;
+      }
+      return null;
+    }
+
+    function activateButton(b) {
+      if (!b || !canAdjust(gwState)) return false;
+      if (b.reset) {
+        resetAdjust(adjust[b.side]);
+      } else if (b.restore) {
+        // 恢复到本次页面打开时加载的配置
+        const s = startupAdjust[b.side];
+        adjust[b.side].posR = s.posR.slice();
+        adjust[b.side].rotR = s.rotR.slice();
+      } else {
+        rotateAdjust(adjust[b.side], b.part, b.axis, b.sign);
+      }
+      saveAdjustToStore();
+      drawHud();
+      return true;
+    }
+
+    // UV -> canvas 坐标（HUD 平面 1024x512，v 轴向下）
+    function canvasCoordsFromUV(uv) {
+      return { x: uv.x * 1024, y: (1 - uv.y) * 512 };
+    }
+
+    // 手柄环颜色：左右手固定基色（左绿右橙），亮度表达状态——
+    // following 亮、online 稍暗、offline/无数据灰
+    function setRingColor(ring, side) {
+      const hs = handState(side);
+      const base = HAND_BASE_COLOR[side];
+      let color;
+      if (hs === 'following') {
+        color = base;
+      } else if (hs === 'online') {
+        color = dimColor(base, 0.55);
+      } else if (hs === 'offline') {
+        color = 0x667080;
+      } else {
+        color = 0x44506a;
+      }
+      ring.material.color.set(color);
+    }
+
+    function makeController() {
+      const g = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.04, 0.006, 8, 24),
+        new THREE.MeshBasicMaterial({ color: 0x8a93a6 }));
+      g.add(ring);
+      // 手柄常驻坐标系：随控制器实时转动，直观显示手柄朝向
+      const axes = makeAxes(0.07, 0.0025);
+      g.add(axes);
+      g.userData.ring = ring;
+      g.userData.axes = axes;
+      scene.add(g);
+      return g;
+    }
+    const ctrlLeft = makeController();
+    const ctrlRight = makeController();
+
+    // 校准后位姿的幽灵手柄（半透明环）：位于生效位姿 eff，让调整立即可见，
+    // 同时真实手柄环仍贴着实际手柄（不位移、不误导操作者）
+    function makeGhost(color) {
+      const g = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.TorusGeometry(0.04, 0.004, 8, 24),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.42 }));
+      g.add(ring);
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.008, 10, 10),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.75 }));
+      g.add(dot);
+      g.visible = false;
+      scene.add(g);
+      return g;
+    }
+    const ghostLeft = makeGhost(0x66e0ff);
+    const ghostRight = makeGhost(0xffb066);
+
+    // 四元数双覆盖连续性存储（raw 与 eff 各一份，每手）
+    const prevQuatNowStore = {
+      left: { x: 0, y: 0, z: 0, w: 0, valid: false },
+      right: { x: 0, y: 0, z: 0, w: 0, valid: false }
+    };
+    const prevQuatEffStore = {
+      left: { x: 0, y: 0, z: 0, w: 0, valid: false },
+      right: { x: 0, y: 0, z: 0, w: 0, valid: false }
+    };
+    // 增量参考系 gizmo：始终挂在手柄上，区分位置/姿态两个增量的坐标系。
+    // 位置参考系（上方，青/黄/品红，方块端头）= 校准后的手柄位置 + 手柄朝向；
+    // 姿态参考系（下方，红/绿/蓝，圆点端头）= 校准后的手柄位置 + 校准后姿态。
+    const POS_COLORS = [0x00e5ff, 0xffd740, 0xff4081];
+    const ROT_COLORS = [0xff5566, 0x55ff88, 0x5599ff];
+    function makeFrameGizmo(colors, len, square) {
+      const g = new THREE.Group();
+      const dirs = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+      dirs.forEach((d, i) => {
+        const axis = new THREE.Mesh(
+          square
+            ? new THREE.BoxGeometry(0.003, 0.003, len)
+            : new THREE.CylinderGeometry(0.0018, 0.0018, len, 6),
+          new THREE.MeshBasicMaterial({ color: colors[i] }));
+        const q = new THREE.Quaternion().setFromUnitVectors(
+          new THREE.Vector3(0, 1, 0), new THREE.Vector3(d[0], d[1], d[2]));
+        axis.quaternion.copy(q);
+        axis.position.set(d[0] * len / 2, d[1] * len / 2, d[2] * len / 2);
+        g.add(axis);
+        const cap = new THREE.Mesh(
+          square
+            ? new THREE.BoxGeometry(0.006, 0.006, 0.006)
+            : new THREE.SphereGeometry(0.004, 8, 8),
+          new THREE.MeshBasicMaterial({ color: colors[i] }));
+        cap.position.set(d[0] * len, d[1] * len, d[2] * len);
+        g.add(cap);
+      });
+      const dot = new THREE.Mesh(
+        new THREE.SphereGeometry(0.0035, 8, 8),
+        new THREE.MeshBasicMaterial({ color: colors[0] }));
+      g.add(dot);
+      scene.add(g);
+      return g;
+    }
+    const posGizmo = {
+      left: makeFrameGizmo(POS_COLORS, 0.03, true),
+      right: makeFrameGizmo(POS_COLORS, 0.03, true)
+    };
+    const rotGizmo = {
+      left: makeFrameGizmo(ROT_COLORS, 0.026, false),
+      right: makeFrameGizmo(ROT_COLORS, 0.026, false)
+    };
+    let prevGripL = false, prevGripR = false;
+    // 非 running 时手柄按下状态（grip 或扳机扣过阈值），用于射线点按钮的按下沿
+    let prevTrigL = false, prevTrigR = false;
+    // 迷你坐标系轴亮度：每手线速度/角速度（世界系，平滑后）与上帧位姿样本
+    const axisBrightness = { left: null, right: null };
+    const linVel = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+    const angVel = { left: new THREE.Vector3(), right: new THREE.Vector3() };
+    const lastPoseSample = { left: null, right: null };
+    const tmpV = new THREE.Vector3();
+    const tmpV2 = new THREE.Vector3();
+    const tmpV3 = new THREE.Vector3();
+    const tmpQ = new THREE.Quaternion();
+    const tmpQ2 = new THREE.Quaternion();
+    // 世界系偏移：位置系在手柄左上、姿态系在右上，避免遮挡手柄本体与面板
+    const gizmoPosOffset = new THREE.Vector3(-0.055, 0.035, 0);
+    const gizmoRotOffset = new THREE.Vector3(0.055, 0.035, 0);
+
+    // 四元数 -> 欧拉角（XYZ 顺序，弧度），用于 HUD 末端展示
+    function quatToEuler(r) {
+      const q = new THREE.Quaternion(r[0], r[1], r[2], r[3]);
+      const e = new THREE.Euler().setFromQuaternion(q, 'XYZ');
+      return [e.x, e.y, e.z];
+    }
+
+    function readHand(src) {
+      if (!src) return null;
+      const gp = src.gamepad;
+      const btn = gp && gp.buttons ? gp.buttons : {};
+      const axes = gp && gp.axes ? gp.axes : [];
+      return {
+        p: [src.position.x, src.position.y, src.position.z],
+        r: [src.quaternion.x, src.quaternion.y, src.quaternion.z, src.quaternion.w],
+        grip: !!(btn[1] && btn[1].pressed),
+        // 扳机：WebXR 原始语义——按住 = 1、松开 = 0
+        trigger: btn[0] ? btn[0].value : 0,
+        primary: !!(btn[4] && btn[4].pressed),
+        secondary: !!(btn[5] && btn[5].pressed),
+        thumbstick: !!(btn[3] && btn[3].pressed),
+        thumb: [axes[2] ?? 0, axes[3] ?? 0]
+      };
+    }
+
+    // --- 手柄矩阵调整交互 ---
+    // VR：控制器射线指向 HUD 按钮，握把按下沿触发（仅非 RUNNING；RUNNING 锁定）；
+    // 桌面：鼠标悬停/点击。射线用细圆柱 + 末端小球（WebGL 1px 线宽在 VR 中不可见）。
+    const RAY_LEN = 0.35;
+    function makeRay() {
+      const grp = new THREE.Group();
+      const beam = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.0012, 0.0012, RAY_LEN, 6),
+        new THREE.MeshBasicMaterial({ color: 0x66ccff }));
+      beam.rotation.x = Math.PI / 2;
+      beam.position.z = -RAY_LEN / 2;
+      const tip = new THREE.Mesh(
+        new THREE.SphereGeometry(0.0035, 8, 8),
+        new THREE.MeshBasicMaterial({ color: 0xbfe4ff }));
+      tip.position.z = -RAY_LEN;
+      grp.add(beam);
+      grp.add(tip);
+      grp.visible = false;
+      scene.add(grp);
+      return grp;
+    }
+    const rayL = makeRay();
+    const rayR = makeRay();
+    let ctrlHover = null;       // VR 控制器射线当前命中的 canvas 坐标
+    let mouseHoverCanvas = null; // 桌面鼠标当前命中的 canvas 坐标
+
+    const uiRaycaster = new THREE.Raycaster();
+    const uiVec2 = new THREE.Vector2();
+    function rayPick(ctrlObj) {
+      // XR 中相机/父链的 matrixWorld 在 render 时才更新，raycast 前先强制刷新，
+      // 避免头显移动时用上一帧的 HUD 平面位置（按钮命中区只有 ~12x8mm）
+      camera.updateMatrixWorld();
+      hudPlane.updateWorldMatrix(true, false);
+      uiRaycaster.ray.origin.copy(ctrlObj.position);
+      uiRaycaster.ray.direction.set(0, 0, -1).applyQuaternion(ctrlObj.quaternion);
+      return uiRaycaster.intersectObject(hudPlane, false)[0] || null;
+    }
+
+    // 桌面：鼠标事件 -> HUD 平面 UV -> canvas 坐标
+    function mouseCanvasCoord(e) {
+      const nx = (e.clientX / innerWidth) * 2 - 1;
+      const ny = -((e.clientY / innerHeight) * 2 - 1);
+      uiVec2.set(nx, ny);
+      uiRaycaster.setFromCamera(uiVec2, camera);
+      const hit = uiRaycaster.intersectObject(hudPlane, false)[0];
+      return hit && hit.uv ? canvasCoordsFromUV(hit.uv) : null;
+    }
+    renderer.domElement.addEventListener('pointermove', (e) => {
+      mouseHoverCanvas = mouseCanvasCoord(e);
+    });
+    renderer.domElement.addEventListener('pointerdown', (e) => {
+      const c = mouseCanvasCoord(e);
+      if (c) activateButton(hitButton(c.x, c.y));
+    });
+
+    // 校准的增量基准：running 中 = 该手进入 running / resume 时的原始位姿
+    // （HUD 仅在 enteredRunning 时设置，pause 调整后 resume 会以新位姿为基准）；
+    // 非 running 时 = 当前位姿（增量恒为 0，位姿透传）；离线返回 null。
+    function deltaBase(side) {
+      const pb = pressBase[side];
+      if (isRunning() && pb.has) {
+        basePosArr[side][0] = pb.pos.x;
+        basePosArr[side][1] = pb.pos.y;
+        basePosArr[side][2] = pb.pos.z;
+        baseQuatArr[side][0] = pb.quat.x;
+        baseQuatArr[side][1] = pb.quat.y;
+        baseQuatArr[side][2] = pb.quat.z;
+        baseQuatArr[side][3] = pb.quat.w;
+        return { p: basePosArr[side], q: baseQuatArr[side] };
+      }
+      if (!ctrlOnlineNow[side]) {
+        return null;
+      }
+      const p = ctrlPosNow[side], q = ctrlQuatNow[side];
+      return { p: [p.x, p.y, p.z], q: [q.x, q.y, q.z, q.w] };
+    }
+
+    renderer.setAnimationLoop((time, xrFrame) => {
+      // 眼镜朝向每帧先刷新（位置增量在眼镜系，rawDelta/亮度计算也要用）
+      headQuat.copy(camera.quaternion);
+      headQuatInv.copy(headQuat).invert();
+      headQArr[0] = headQuat.x; headQArr[1] = headQuat.y;
+      headQArr[2] = headQuat.z; headQArr[3] = headQuat.w;
+      ctrlLeft.visible = false;
+      ctrlRight.visible = false;
+      const msg = { t: time / 1000.0 };
+
+      const session = renderer.xr.getSession();
+      if (session) {
+        for (const src of session.inputSources) {
+          if (!src.gripSpace) continue;
+          let pose = null;
+          try {
+            pose = xrFrame.getPose(src.gripSpace, renderer.xr.getReferenceSpace());
+          } catch (e) {
+            // reference space 不可用时 getPose 会抛：计数并跳过，避免整帧中断
+            xrPoseMiss++;
+            continue;
+          }
+          if (!pose) { xrPoseMiss++; continue; }
+          const side = src.handedness;
+          const hand = side === 'left' ? ctrlLeft : ctrlRight;
+          hand.visible = true;
+          // 原始（未校准）手柄位姿：输入读数、hpos/hquat 展示与速度估计用
+          ctrlPosNow[side].set(pose.transform.position.x, pose.transform.position.y, pose.transform.position.z);
+          ctrlQuatNow[side].set(pose.transform.orientation.x, pose.transform.orientation.y,
+                                pose.transform.orientation.z, pose.transform.orientation.w);
+          // 四元数双覆盖规范化：避免符号逐帧跳变传给下游
+          const qnRaw = quatContinuityFix(ctrlQuatNow[side].toArray(), prevQuatNowStore[side]);
+          ctrlQuatNow[side].set(qnRaw[0], qnRaw[1], qnRaw[2], qnRaw[3]);
+          // 校准作用于增量（模型 b）：位移方向经 posR 重定向、姿态右乘 rotR
+          const eff = applyAdjust(adjust[side],
+            ctrlPosNow[side].toArray(), ctrlQuatNow[side].toArray(),
+            deltaBase(side), headQArr);
+          ctrlPosEff[side].set(eff.p[0], eff.p[1], eff.p[2]);
+          ctrlQuatEff[side].set(eff.q[0], eff.q[1], eff.q[2], eff.q[3]);
+          const qnEff = quatContinuityFix(eff.q, prevQuatEffStore[side]);
+          ctrlQuatEff[side].set(qnEff[0], qnEff[1], qnEff[2], qnEff[3]);
+          // 3D 手柄环/三轴显示原始手柄位姿（与真实手柄位置一致）；
+          // 校准结果由半透明幽灵手柄（eff）与参考系 gizmo 表达
+          hand.position.copy(ctrlPosNow[side]);
+          hand.quaternion.copy(ctrlQuatNow[side]);
+          // 幽灵手柄：校准后位姿（立即可见，不移动真实手柄环）
+          const ghost = side === 'left' ? ghostLeft : ghostRight;
+          ghost.visible = true;
+          ghost.position.copy(ctrlPosEff[side]);
+          ghost.quaternion.copy(ctrlQuatEff[side]);
+          msg[side] = readHand({ position: ctrlPosEff[side], quaternion: ctrlQuatEff[side], gamepad: src.gamepad });
+          // 原始位姿随帧上行：网关在 grip 按下沿记录并回传为增量基准（双端同锚）
+          msg[side].raw = { p: ctrlPosNow[side].toArray(), r: ctrlQuatNow[side].toArray() };
+        }
+      } else {
+        const t = time / 1000.0;
+        for (const [name, obj, ph] of [['left', ctrlLeft, 0], ['right', ctrlRight, Math.PI]]) {
+          obj.visible = true;
+          // 桌面演示轨迹放在视野下方（接近真实胸前手柄位置），避免遮挡 HUD 面板
+          obj.position.set(0.15 * Math.sin(t * 1.1 + ph), -0.20 + 0.05 * Math.sin(t * 0.8 + ph), -0.4 + 0.08 * Math.sin(t * 1.3 + ph));
+          obj.rotation.set(0.3 * Math.sin(t + ph), 0.5 * Math.sin(t * 0.7 + ph), 0);
+          ctrlPosNow[name].copy(obj.position);
+          ctrlQuatNow[name].copy(obj.quaternion);
+          const qnRawD = quatContinuityFix(ctrlQuatNow[name].toArray(), prevQuatNowStore[name]);
+          ctrlQuatNow[name].set(qnRawD[0], qnRawD[1], qnRawD[2], qnRawD[3]);
+          const eff = applyAdjust(adjust[name],
+            ctrlPosNow[name].toArray(), ctrlQuatNow[name].toArray(),
+            deltaBase(name), headQArr);
+          ctrlPosEff[name].set(eff.p[0], eff.p[1], eff.p[2]);
+          ctrlQuatEff[name].set(eff.q[0], eff.q[1], eff.q[2], eff.q[3]);
+          const qnEffD = quatContinuityFix(eff.q, prevQuatEffStore[name]);
+          ctrlQuatEff[name].set(qnEffD[0], qnEffD[1], qnEffD[2], qnEffD[3]);
+          // 3D 手柄环/三轴保持原始位姿（校准由幽灵手柄表达）
+          const ghostD = name === 'left' ? ghostLeft : ghostRight;
+          ghostD.visible = true;
+          ghostD.position.copy(ctrlPosEff[name]);
+          ghostD.quaternion.copy(ctrlQuatEff[name]);
+          msg[name] = readHand({ position: ctrlPosEff[name], quaternion: ctrlQuatEff[name], gamepad: { buttons: { 1: { pressed: Math.sin(t) > -0.2 }, 0: { value: 0.5 } } } });
+          msg[name].raw = { p: ctrlPosNow[name].toArray(), r: ctrlQuatNow[name].toArray() };
+        }
+      }
+
+      // 手柄环颜色：左右手固定基色（左绿右橙），亮度表达 per-hand 状态
+      setRingColor(ctrlLeft.userData.ring, 'left');
+      setRingColor(ctrlRight.userData.ring, 'right');
+      // 手柄原始位姿已在上面按输入源/演示轨迹写入 ctrlPosNow/Quat；
+      // 眼镜朝向在循环开头已刷新
+      ctrlOnlineNow.left = ctrlLeft.visible;
+      ctrlOnlineNow.right = ctrlRight.visible;
+
+      // 参考系 gizmo：位置参考系（手柄朝向，校准后位置）与姿态参考系（校准后朝向）
+      for (const [side, obj, posG, rotG] of [
+        ['left', ctrlLeft, posGizmo.left, rotGizmo.left],
+        ['right', ctrlRight, posGizmo.right, rotGizmo.right]
+      ]) {
+        posG.visible = obj.visible;
+        rotG.visible = obj.visible;
+        if (!obj.visible) continue;
+        posG.position.copy(ctrlPosEff[side]).add(gizmoPosOffset);
+        posG.quaternion.copy(ctrlQuatNow[side]);
+        rotG.position.copy(ctrlPosEff[side]).add(gizmoRotOffset);
+        rotG.quaternion.copy(ctrlQuatEff[side]);
+      }
+
+      // 迷你坐标系轴亮度：按当前运动速度（m/s）/角速度（rad/s）的世界系分量。
+      // 差分求瞬时值 + 指数平滑；0.5 m/s 与 2 rad/s 记为满亮度。
+      const nowS = time / 1000.0;
+      for (const side of ['left', 'right']) {
+        const vis = side === 'left' ? ctrlLeft.visible : ctrlRight.visible;
+        const p = side === 'left' ? ctrlPosNow.left : ctrlPosNow.right;
+        const q = side === 'left' ? ctrlQuatNow.left : ctrlQuatNow.right;
+        const prev = lastPoseSample[side];
+        if (vis && prev && nowS > prev.t + 1e-4) {
+          const dt = nowS - prev.t;
+          tmpV.set((p.x - prev.px) / dt, (p.y - prev.py) / dt, (p.z - prev.pz) / dt);
+          linVel[side].lerp(tmpV, 0.3);
+          tmpQ.set(prev.qx, prev.qy, prev.qz, prev.qw).invert();
+          tmpQ2.copy(q).multiply(tmpQ);
+          const wq = Math.min(1, Math.max(-1, tmpQ2.w));
+          const ang = 2 * Math.acos(wq);
+          const s2 = Math.sqrt(Math.max(0, 1 - wq * wq));
+          if (ang > 1e-3 && s2 > 1e-6) {
+            tmpV.set(tmpQ2.x / s2, tmpQ2.y / s2, tmpQ2.z / s2).multiplyScalar(ang / dt);
+          } else {
+            tmpV.set(0, 0, 0);
+          }
+          angVel[side].lerp(tmpV, 0.3);
+          lastPoseSample[side].t = nowS;
+          lastPoseSample[side].px = p.x; lastPoseSample[side].py = p.y; lastPoseSample[side].pz = p.z;
+          lastPoseSample[side].qx = q.x; lastPoseSample[side].qy = q.y;
+          lastPoseSample[side].qz = q.z; lastPoseSample[side].qw = q.w;
+        } else if (vis && !prev) {
+          lastPoseSample[side] = { t: nowS, px: p.x, py: p.y, pz: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w };
+        } else if (!vis) {
+          lastPoseSample[side] = null;
+          linVel[side].set(0, 0, 0);
+          angVel[side].set(0, 0, 0);
+        }
+        // 轴亮度：位置增量在眼镜系、旋转增量在手柄基准系，各自用该系的
+        // 线速度/角速度分量（0.5 m/s 与 2 rad/s 记为满亮度）
+        const lv = tmpV2.copy(linVel[side]).applyQuaternion(headQuatInv);
+        tmpQ.copy(q).invert();
+        const av = tmpV3.copy(angVel[side]).applyQuaternion(tmpQ);
+        axisBrightness[side] = {
+          lin: { X: Math.min(1, Math.abs(lv.x) / 0.5), Y: Math.min(1, Math.abs(lv.y) / 0.5), Z: Math.min(1, Math.abs(lv.z) / 0.5) },
+          ang: { X: Math.min(1, Math.abs(av.x) / 2), Y: Math.min(1, Math.abs(av.y) / 2), Z: Math.min(1, Math.abs(av.z) / 2) }
+        };
+      }
+
+      // running 且该手 grip 跟随中才绘制轨迹（从生效手柄位置出发，每帧追加，
+      // 6mm 去重）
+      if (isRunning()) {
+        if (ctrlLeft.visible && handState('left') === 'following') {
+          appendTrailAt('left', ctrlPosEff.left);
+        }
+        if (ctrlRight.visible && handState('right') === 'following') {
+          appendTrailAt('right', ctrlPosEff.right);
+        }
+      }
+
+      // 相对运动参考系：grip 按下沿（running 中）摆到生效手柄位姿并显示，
+      // 松开后保留，非 running 隐藏 —— 操作者可直观看到相对哪个坐标系运动
+      hudGripL = msg.left?.grip ?? false;
+      hudGripR = msg.right?.grip ?? false;
+      // 扳机值也要先刷新（射线点按钮的按下沿在下面用到）
+      hudTrigL = msg.left?.trigger ?? 0;
+      hudTrigR = msg.right?.trigger ?? 0;
+      if (isRunning()) {
+        if (hudGripL && !prevGripL) {
+          refL.position.copy(ctrlPosEff.left);
+          refL.quaternion.copy(ctrlQuatEff.left);
+          // 增量基准保持为该会话进入 running 时的位姿（不随 grip 沿改变）：
+          // 变换矩阵依赖基准，若基准在重按瞬间切换，q_eff/p_eff 会突变（机械臂摆动）；
+          // clutch 的“从新位置继续跟随”由网关对齐上一帧输出实现。
+        }
+        if (hudGripR && !prevGripR) {
+          refR.position.copy(ctrlPosEff.right);
+          refR.quaternion.copy(ctrlQuatEff.right);
+        }
+        refL.visible = hudGripL || refL.visible;
+        refR.visible = hudGripR || refR.visible;
+      } else {
+        refL.visible = false;
+        refR.visible = false;
+      }
+
+      // --- 手柄矩阵调整交互（仅真实 XR；RUNNING 锁定，射线仅非 RUNNING 显示） ---
+      // 桌面演示模式 grip/扳机是模拟值，不参与按钮触发（按钮用鼠标点击）
+      // VR 中扳机或握把的按下沿都会触发命中的按钮；必须早于 prev* 赋值
+      ctrlHover = null;
+      if (session && !isRunning()) {
+        for (const [side, ctrl, rayG] of [['left', ctrlLeft, rayL], ['right', ctrlRight, rayR]]) {
+          if (!ctrl.visible) { rayG.visible = false; continue; }
+          rayG.position.copy(ctrl.position);
+          rayG.quaternion.copy(ctrl.quaternion);
+          rayG.visible = true;
+          const hit = rayPick(ctrl);
+          if (hit && hit.uv) {
+            const c = canvasCoordsFromUV(hit.uv);
+            if (!ctrlHover) ctrlHover = c;
+            const btn = hitButton(c.x, c.y);
+            rayG.children[1].material.color.set(btn ? 0xffe08a : 0xbfe4ff);
+            const pressNow = side === 'left'
+              ? (hudGripL || hudTrigL > 0.7)
+              : (hudGripR || hudTrigR > 0.7);
+            const pressPrev = side === 'left' ? prevTrigL : prevTrigR;
+            if (btn && pressNow && !pressPrev) activateButton(btn);
+          } else {
+            rayG.children[1].material.color.set(0xbfe4ff);
+          }
+        }
+      } else {
+        rayL.visible = false;
+        rayR.visible = false;
+      }
+      hoverCanvas = session ? ctrlHover : mouseHoverCanvas;
+
+      prevTrigL = hudGripL || hudTrigL > 0.7;
+      prevTrigR = hudGripR || hudTrigR > 0.7;
+
+      if (wsReady) {
+        ws.send(JSON.stringify(msg));
+        sent++;
+        const now = performance.now();
+        if (now - lastStat > 1000) {
+          document.getElementById('rate').textContent = `WS 发送 ${sent} 帧 (≈${sent} Hz)`;
+          // XR 诊断：会话/参考系/输入源/pose 丢失（AR 会话下定位"环不动"用）
+          const xs = renderer.xr.getSession();
+          const refSpace = renderer.xr.getReferenceSpace();
+          document.getElementById('status').textContent =
+            `WS 已连接 · XR ${xs ? '会话' : '未进入'}`
+            + ` · 参考系 ${refSpace ? 'OK' : '缺失'}`
+            + ` · 输入源 ${xs ? xs.inputSources.length : 0}`
+            + ` · pose丢失 ${xrPoseMiss}`;
+          xrPoseMiss = 0;
+          sent = 0;
+          lastStat = now;
+        }
+        drawHud();
+      }
+
+      renderer.render(scene, camera);
+    });
+
+    // 测试/调试 hook（headless 验证用）：读取调整矩阵、按钮注册表、模拟按钮命中
+    window.__hudDebug = {
+      state: () => gwState,
+      getAdjust: (side) => ({ posR: adjust[side].posR.slice(), rotR: adjust[side].rotR.slice() }),
+      getStartup: (side) => ({ posR: startupAdjust[side].posR.slice(), rotR: startupAdjust[side].rotR.slice() }),
+      getEff: (side) => ({ p: ctrlPosEff[side].toArray(), q: ctrlQuatEff[side].toArray() }),
+      getRaw: (side) => ({ p: ctrlPosNow[side].toArray(), q: ctrlQuatNow[side].toArray() }),
+      // 扳机值（按下=0、松开=1）
+      getTrigger: (side) => (side === 'left' ? hudTrigL : hudTrigR),
+      // 增量参考系 gizmo 的朝向（应 = raw.q ⊗ 对应增量矩阵的四元数）
+      getGizmo: (side, kind) => {
+        const g = (kind === 'pos' ? posGizmo : rotGizmo)[side];
+        return { p: g.position.toArray(), q: g.quaternion.toArray() };
+      },
+      // 3D 手柄环/三轴的显示位姿（应等于校准后的有效位姿）
+      getDisplay: (side) => {
+        const obj = side === 'left' ? ctrlLeft : ctrlRight;
+        return { p: obj.position.toArray(), q: obj.quaternion.toArray() };
+      },
+      getBase: (side) => {
+        const b = pressBase[side];
+        return { has: b.has, p: b.pos.toArray(), q: b.quat.toArray() };
+      },
+      // 校准后位姿的幽灵手柄
+      getGhost: (side) => {
+        const g = side === 'left' ? ghostLeft : ghostRight;
+        return { visible: g.visible, p: g.position.toArray(), q: g.quaternion.toArray() };
+      },
+      // 同帧读取：原始位姿 / 基准 / 眼镜朝向 / 生效位姿 / 3D 显示位姿
+      rawDelta: (side) => {
+        const p = ctrlPosNow[side], q = ctrlQuatNow[side];
+        const base = deltaBase(side);
+        const eff = applyAdjust(adjust[side],
+          [p.x, p.y, p.z], [q.x, q.y, q.z, q.w], base, headQArr);
+        const obj = side === 'left' ? ctrlLeft : ctrlRight;
+        return {
+          raw: { p: [p.x, p.y, p.z], q: q.toArray() },
+          base: base ? { p: [...base.p], q: [...base.q] } : null,
+          headQ: headQArr.slice(),
+          running: isRunning(),
+          eff: { p: eff.p, q: eff.q },
+          display: { p: obj.position.toArray(), q: obj.quaternion.toArray() }
+        };
+      },
+      buttons: () => buttonRects.map((b) => ({
+        x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1,
+        side: b.side, part: b.part, axis: b.axis, sign: b.sign, reset: !!b.reset, restore: !!b.restore
+      })),
+      // canvas 坐标 -> 屏幕像素坐标（headless 鼠标事件验证用）
+      canvasToScreen: (cx, cy) => {
+        const local = new THREE.Vector3((cx / 1024 - 0.5) * 0.52, (0.5 - cy / 512) * 0.26, 0);
+        const world = local.applyMatrix4(hudPlane.matrixWorld);
+        const ndc = world.clone().project(camera);
+        return { x: (ndc.x + 1) / 2 * innerWidth, y: (1 - ndc.y) / 2 * innerHeight };
+      },
+      applyHit: (cx, cy) => {
+        const b = hitButton(cx, cy);
+        return b && activateButton(b)
+          ? { side: b.side, part: b.part, axis: b.axis, sign: b.sign, reset: !!b.reset, restore: !!b.restore }
+          : null;
+      }
+    };
+  </script>
+</body>
+</html>
