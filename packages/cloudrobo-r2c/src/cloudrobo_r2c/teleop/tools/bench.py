@@ -30,7 +30,7 @@ def run_bench(
 ) -> None:
     import zenoh
 
-    from ..common.models.generated import teleop_pb2
+    from ...common.models.generated import teleop_pb2
 
     topic = f"{project_id}/{device_id}/teleop/actions"
     cfg = zenoh.Config()

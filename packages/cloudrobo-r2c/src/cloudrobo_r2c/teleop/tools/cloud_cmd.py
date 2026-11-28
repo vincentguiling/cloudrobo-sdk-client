@@ -29,7 +29,7 @@ def publish_cloud_command(
 ) -> None:
     import zenoh
 
-    from ..common.models.generated import teleop_pb2
+    from ...common.models.generated import teleop_pb2
 
     eps = (
         [e.strip() for e in endpoints.split(",") if e.strip()]

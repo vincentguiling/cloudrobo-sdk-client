@@ -20,7 +20,7 @@ def run_state_inspect(
 ) -> None:
     import zenoh
 
-    from ..common.models.generated import current_state_pb2
+    from ...common.models.generated import current_state_pb2
 
     topic = f"{project_id}/{device_id}/state/current"
     cfg = zenoh.Config()
